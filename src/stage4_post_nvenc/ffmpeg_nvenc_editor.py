@@ -1,6 +1,8 @@
 import os
 import json
+import math
 import subprocess
+import wave
 from pathlib import Path
 from typing import List, Dict
 
@@ -41,25 +43,42 @@ def build_ffmpeg_master_command(
     scene_cfg = storyboard["scene"]
     fps = int(meta.get("fps", 24))
     overlap = 0.30
+    if not muxed_clips or len(muxed_clips) != len(clip_durations):
+        raise ValueError("Cần có cảnh quay và thời lượng tương ứng để dựng phim.")
+    if any(not math.isfinite(d) or d <= overlap for d in clip_durations):
+        raise ValueError("Thời lượng cảnh quay không hợp lệ.")
+    total_duration = sum(clip_durations) - overlap * (len(muxed_clips) - 1)
 
     inputs: List[str] = []
     for clip in muxed_clips:
         inputs.extend(["-i", str(clip.as_posix())])
 
     room_tone_path = Path(scene_cfg.get("room_tone_file", ""))
-    has_room_tone = room_tone_path.exists() and room_tone_path.stat().st_size > 10
+    has_room_tone = room_tone_path.is_file() and room_tone_path.stat().st_size > 44
     room_tone_idx = len(muxed_clips)
     if has_room_tone:
         inputs.extend(["-stream_loop", "-1", "-i", str(room_tone_path.as_posix())])
 
     filters: List[str] = []
     n = len(muxed_clips)
+    # Every input must cover its declared duration and use the same clock.
+    # A short raw render must never silently truncate the entire xfade chain.
+    for i, duration in enumerate(clip_durations):
+        filters.append(
+            f"[{i}:v]fps={fps},settb=AVTB,setpts=PTS-STARTPTS,"
+            f"tpad=stop_mode=clone:stop_duration={duration},trim=duration={duration},"
+            f"setsar=1,format=yuv420p[v{i}]"
+        )
+        filters.append(
+            f"[{i}:a]aresample=48000,aformat=channel_layouts=stereo,"
+            f"asetpts=PTS-STARTPTS,apad,atrim=duration={duration}[a{i}]"
+        )
 
     if n == 1:
-        filters.append("[0:v]null[v_joined];[0:a]anull[a_joined]")
+        filters.append("[v0]null[v_joined];[a0]anull[a_joined]")
     else:
-        v_prev = "[0:v]"
-        a_prev = "[0:a]"
+        v_prev = "[v0]"
+        a_prev = "[a0]"
         timeline_cursor = clip_durations[0]
 
         for i in range(1, n):
@@ -67,8 +86,8 @@ def build_ffmpeg_master_command(
             v_out = f"[v_jcut_{i}]"
             a_out = f"[a_jcut_{i}]"
 
-            filters.append(f"{v_prev}[{i}:v]xfade=transition=fade:duration=0.04:offset={cut_offset}{v_out}")
-            filters.append(f"{a_prev}[{i}:a]acrossfade=d={overlap}:c1=tri:c2=tri{a_out}")
+            filters.append(f"{v_prev}[v{i}]xfade=transition=fade:duration={overlap}:offset={cut_offset}{v_out}")
+            filters.append(f"{a_prev}[a{i}]acrossfade=d={overlap}:c1=tri:c2=tri{a_out}")
 
             v_prev = v_out
             a_prev = a_out
@@ -81,24 +100,25 @@ def build_ffmpeg_master_command(
         rt_vol = float(scene_cfg.get("room_tone_base_volume", 0.16))
         filters.append(
             f"[{room_tone_idx}:a]volume={rt_vol}[a_rt];"
-            f"[a_joined][a_rt]amix=inputs=2:duration=first:dropout_transition=0[a_master]"
+            f"[a_joined][a_rt]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a_master]"
         )
     else:
         filters.append("[a_joined]anull[a_master]")
 
-    lut_path = Path(meta["color_management"].get("lut_path", ""))
-    grain_val = float(meta["color_management"].get("film_grain_intensity", 6.5))
+    color = meta.get("color_management", {})
+    lut_path = Path(color.get("lut_path", ""))
+    grain_val = float(color.get("film_grain_intensity", 6.5))
 
     v_fx = ["format=rgb24"]
-    if lut_path.exists():
+    if lut_path.is_file():
         safe_lut = _sanitize_lut_path_for_ffmpeg(lut_path)
         v_fx.append(f"lut3d=file='{safe_lut}':interp=tetrahedral")
     v_fx.extend([
         "eq=contrast=1.06:brightness=0.02:saturation=1.12",
         "format=yuv420p",
         f"noise=alls={grain_val}:allf=t+u",
-        "drawbox=x=0:y=0:w=iw:h=132:color=black:t=fill",
-        "drawbox=x=0:y=ih-132:w=iw:h=132:color=black:t=fill",
+        "drawbox=x=0:y=0:w=iw:h=ih*0.1222:color=black:t=fill",
+        "drawbox=x=0:y=ih-ih*0.1222:w=iw:h=ih*0.1222:color=black:t=fill",
     ])
     filters.append(f"[v_joined]{','.join(v_fx)}[v_master]")
 
@@ -109,7 +129,8 @@ def build_ffmpeg_master_command(
     )
 
     return [
-        "ffmpeg", "-y",
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-filter_complex_threads", "2",
         *inputs,
         "-filter_complex", ";".join(filters),
         "-map", "[v_master]",
@@ -118,35 +139,18 @@ def build_ffmpeg_master_command(
         *video_encoder_flags,
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "256k",
+        "-t", str(round(total_duration, 6)),
+        "-movflags", "+faststart",
         str(output_movie_path.as_posix()),
     ]
-
-
-def _fallback_concat_muxed_clips(muxed_clips: List[Path], output_movie_path: Path):
-    """Fallback an toàn tuyệt đối: Nối các clip đã mux tiếng bằng concat demuxer của FFmpeg."""
-    concat_list = output_movie_path.parent / "concat_list.txt"
-    with open(concat_list, "w", encoding="utf-8") as f:
-        for clip in muxed_clips:
-            clean_p = clip.resolve().as_posix()
-            f.write(f"file '{clean_p}'\n")
-
-    cmd = [
-        "ffmpeg", "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", str(concat_list.as_posix()),
-        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-        "-c:a", "aac", "-b:a", "192k",
-        "-pix_fmt", "yuv420p",
-        str(output_movie_path.as_posix()),
-    ]
-    subprocess.run(cmd, check=True)
 
 
 def assemble_final_cinematic_movie(storyboard_path: Path, output_movie_path: Path) -> Path:
-    import wave
     storyboard = json.loads(storyboard_path.read_text(encoding="utf-8"))
     shots = storyboard["shots"]
+    if not shots:
+        raise ValueError("Kịch bản chưa có cảnh quay.")
+    fps = int(storyboard["project_meta"].get("fps", 24))
     overlap = 0.30
     use_nvenc = is_nvenc_available()
 
@@ -160,23 +164,11 @@ def assemble_final_cinematic_movie(storyboard_path: Path, output_movie_path: Pat
         shot_id = shot["shot_id"]
         raw_vid = Path(shot["transition"]["raw_render_path"])
         wav_aud = Path(shot["dialogue"]["wav_path"])
-        viseme_json = Path(shot["dialogue"]["viseme_json_path"])
-
-        speech_dur = 4.0
-        if wav_aud.exists():
-            try:
-                with wave.open(str(wav_aud), "rb") as wf:
-                    speech_dur = wf.getnframes() / float(wf.getframerate())
-            except Exception:
-                pass
-        elif viseme_json.exists():
-            try:
-                v_data = json.loads(viseme_json.read_text(encoding="utf-8"))
-                speech_dur = float(v_data.get("duration_sec", 4.0))
-            except Exception:
-                pass
-
-        total_clip_dur = round(speech_dur + overlap, 3)
+        if not raw_vid.is_file() or not wav_aud.is_file():
+            raise RuntimeError(f"Cảnh {shot_id} thiếu hình ảnh hoặc giọng đọc.")
+        with wave.open(str(wav_aud), "rb") as wf:
+            speech_dur = wf.getnframes() / float(wf.getframerate())
+        total_clip_dur = math.ceil((speech_dur + overlap) * fps) / fps
 
         mux_out = temp_mux_dir / f"{shot_id}_muxed.mp4"
         enc_flags = (
@@ -185,31 +177,29 @@ def assemble_final_cinematic_movie(storyboard_path: Path, output_movie_path: Pat
             else ["-c:v", "libx264", "-preset", "fast", "-crf", "16"]
         )
         cmd_mux = [
-            "ffmpeg", "-y",
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-i", str(raw_vid.as_posix()),
             "-i", str(wav_aud.as_posix()),
-            "-filter_complex", f"[1:a]apad=pad_dur={overlap}[a_padded]",
-            "-map", "0:v:0", "-map", "[a_padded]",
+            "-filter_complex", (
+                f"[0:v]fps={fps},setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration={total_clip_dur},"
+                f"trim=duration={total_clip_dur}[v_padded];"
+                f"[1:a]apad,atrim=duration={total_clip_dur}[a_padded]"
+            ),
+            "-map", "[v_padded]", "-map", "[a_padded]",
             "-t", str(total_clip_dur),
             *enc_flags,
-            "-c:a", "aac", "-b:a", "192k",
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+            "-movflags", "+faststart",
             str(mux_out.as_posix()),
         ]
         try:
-            subprocess.run(cmd_mux, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            cmd_mux_fallback = [
-                "ffmpeg", "-y",
-                "-i", str(raw_vid.as_posix()),
-                "-i", str(wav_aud.as_posix()),
-                "-filter_complex", f"[1:a]apad=pad_dur={overlap}[a_padded]",
-                "-map", "0:v:0", "-map", "[a_padded]",
-                "-t", str(total_clip_dur),
-                "-c:v", "libx264", "-preset", "fast", "-crf", "16",
-                "-c:a", "aac", "-b:a", "192k",
-                str(mux_out.as_posix()),
-            ]
-            subprocess.run(cmd_mux_fallback, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(cmd_mux, check=True, capture_output=True)
+        except subprocess.CalledProcessError:
+            if not use_nvenc:
+                raise
+            start = cmd_mux.index("-c:v")
+            cmd_mux[start:start + len(enc_flags)] = ["-c:v", "libx264", "-preset", "fast", "-crf", "16"]
+            subprocess.run(cmd_mux, check=True, capture_output=True)
 
         muxed_clips.append(mux_out)
         clip_durations.append(total_clip_dur)
@@ -224,19 +214,14 @@ def assemble_final_cinematic_movie(storyboard_path: Path, output_movie_path: Pat
     )
     try:
         subprocess.run(cmd_master, check=True)
-    except Exception as exc:
+    except subprocess.CalledProcessError as exc:
+        if not use_nvenc:
+            raise
         print(f"[STAGE 4] Lệnh Master với NVENC gặp lỗi ({exc}), chuyển sang CPU libx264...")
-        try:
-            cmd_fallback = build_ffmpeg_master_command(
-                muxed_clips=muxed_clips,
-                clip_durations=clip_durations,
-                storyboard=storyboard,
-                output_movie_path=output_movie_path,
-                use_nvenc=False,
-            )
-            subprocess.run(cmd_fallback, check=True)
-        except Exception as exc2:
-            print(f"[STAGE 4] Filter complex gặp sự cố ({exc2}), kích hoạt fallback concat danh sách...")
-            _fallback_concat_muxed_clips(muxed_clips, output_movie_path)
+        cmd_fallback = build_ffmpeg_master_command(
+            muxed_clips=muxed_clips, clip_durations=clip_durations,
+            storyboard=storyboard, output_movie_path=output_movie_path, use_nvenc=False,
+        )
+        subprocess.run(cmd_fallback, check=True)
 
     return output_movie_path

@@ -1,6 +1,7 @@
 import json
 import time
 import threading
+import uuid
 from pathlib import Path
 from typing import Dict, Any, List
 from fastapi import FastAPI, HTTPException
@@ -15,7 +16,7 @@ app = FastAPI(
     description="Hệ thống Sản xuất Phim 3D Điện ảnh Tự động tối ưu cho Dell Precision 7530 (Xeon + Quadro P2000)",
 )
 
-WORKSPACE_DIR = Path("workspace")
+WORKSPACE_DIR = Path("workspace").resolve()
 WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Trạng thái tiến trình toàn cục phục vụ giao diện theo dõi thời gian thực
@@ -25,11 +26,36 @@ PIPELINE_STATE: Dict[str, Any] = {
     "percent": 0,
     "message": "Sẵn sàng nhận yêu cầu từ Đạo diễn.",
     "logs": [],
-    "video_ready": (WORKSPACE_DIR / "final_cinematic_movie.mp4").exists(),
+    "video_ready": False,
+    "job_id": None,
+    "storyboard_path": None,
+    "video_path": None,
     "video_timestamp": int(time.time()),
     "error_detail": None,
 }
 STATE_LOCK = threading.Lock()
+STATE_PATH = WORKSPACE_DIR / "latest_job.json"
+if STATE_PATH.is_file():
+    try:
+        saved = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        PIPELINE_STATE.update({key: value for key, value in saved.items() if key in PIPELINE_STATE})
+        if PIPELINE_STATE["status"] == "running":
+            PIPELINE_STATE.update(status="error", video_ready=False,
+                                  message="Lần tạo trước bị gián đoạn. Hãy tạo lại video.")
+    except (OSError, ValueError):
+        pass
+
+
+def _save_state():
+    temporary = STATE_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(PIPELINE_STATE, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(STATE_PATH)
+
+
+def _video_is_ready(state):
+    path = Path(state.get("video_path") or "")
+    return bool(state.get("video_ready") and state.get("status") == "completed"
+                and path.is_file() and path.with_suffix(".verified.json").is_file())
 
 
 class RenderJobRequest(BaseModel):
@@ -43,46 +69,45 @@ def _update_progress(stage: int, message: str, percent: int):
         PIPELINE_STATE["message"] = message
         timestamp = time.strftime("%H:%M:%S")
         PIPELINE_STATE["logs"].append(f"[{timestamp}] [TẦNG {stage}] {message}")
+        _save_state()
 
 
-def _background_pipeline_worker(prompt: str):
-    with STATE_LOCK:
-        PIPELINE_STATE["status"] = "running"
-        PIPELINE_STATE["current_stage"] = 1
-        PIPELINE_STATE["percent"] = 5
-        PIPELINE_STATE["message"] = "Khởi động dây chuyền sản xuất 4 tầng..."
-        PIPELINE_STATE["logs"] = [f"[{time.strftime('%H:%M:%S')}] Nhận đề bài: {prompt}"]
-        PIPELINE_STATE["error_detail"] = None
-
+def _background_pipeline_worker(prompt: str, run_dir: Path):
     try:
-        out_video = execute_cinematic_pipeline(prompt, progress_callback=_update_progress)
+        out_video = execute_cinematic_pipeline(prompt, progress_callback=_update_progress, workspace_dir=run_dir)
         with STATE_LOCK:
-            PIPELINE_STATE["status"] = "completed"
-            PIPELINE_STATE["current_stage"] = 4
-            PIPELINE_STATE["percent"] = 100
-            PIPELINE_STATE["video_ready"] = out_video.exists()
-            PIPELINE_STATE["video_timestamp"] = int(time.time())
-            PIPELINE_STATE["message"] = "Đã xuất bản bộ phim điện ảnh thành công!"
+            PIPELINE_STATE.update(status="completed", current_stage=4, percent=100,
+                                  video_ready=True, video_path=str(out_video),
+                                  video_timestamp=time.time_ns(), message="Video đã được kiểm tra hình ảnh và âm thanh.")
+            _save_state()
     except Exception as exc:
         with STATE_LOCK:
-            PIPELINE_STATE["status"] = "error"
-            PIPELINE_STATE["error_detail"] = str(exc)
-            PIPELINE_STATE["message"] = f"Lỗi thực thi: {exc}"
+            PIPELINE_STATE.update(status="error", video_ready=False, error_detail=str(exc),
+                                  message=f"Không tạo được video: {exc}")
             PIPELINE_STATE["logs"].append(f"[ERROR] {exc}")
+            _save_state()
 
 
 @app.post("/api/render")
 def start_render_job(req: RenderJobRequest):
     if not req.prompt or not req.prompt.strip():
         raise HTTPException(status_code=400, detail="Vui lòng nhập nội dung yêu cầu tạo video.")
-
     with STATE_LOCK:
         if PIPELINE_STATE["status"] == "running":
-            raise HTTPException(status_code=409, detail="Hệ thống đang kết xuất một bộ phim khác, vui lòng đợi.")
-
-    worker = threading.Thread(target=_background_pipeline_worker, args=(req.prompt.strip(),), daemon=True)
+            raise HTTPException(status_code=409, detail="Hệ thống đang tạo video, vui lòng đợi.")
+        job_id = uuid.uuid4().hex
+        run_dir = WORKSPACE_DIR / "jobs" / job_id
+        run_dir.mkdir(parents=True)
+        PIPELINE_STATE.update(
+            status="running", current_stage=1, percent=5, video_ready=False,
+            job_id=job_id, storyboard_path=str(run_dir / "storyboard.json"), video_path=None,
+            message="Đang phân tích yêu cầu...", error_detail=None,
+            logs=[f"[{time.strftime('%H:%M:%S')}] Nhận yêu cầu: {req.prompt.strip()}"],
+        )
+        _save_state()
+    worker = threading.Thread(target=_background_pipeline_worker, args=(req.prompt.strip(), run_dir), daemon=True)
     worker.start()
-    return {"status": "started", "prompt": req.prompt.strip()}
+    return {"status": "started", "job_id": job_id, "prompt": req.prompt.strip()}
 
 
 @app.get("/api/auth/status")
@@ -99,57 +124,82 @@ def get_antigravity_auth_status():
 
 @app.get("/api/status")
 def get_pipeline_status():
-    storyboard_data = None
-    sb_path = WORKSPACE_DIR / "storyboard.json"
-    if sb_path.exists():
-        try:
-            storyboard_data = json.loads(sb_path.read_text(encoding="utf-8"))
-            # Đính kèm tóm tắt khẩu hình từ Tầng 2 cho từng cảnh để hiển thị trên UI
-            for shot in storyboard_data.get("shots", []):
-                v_path = Path(shot.get("dialogue", {}).get("viseme_json_path", ""))
-                if v_path.exists():
-                    v_json = json.loads(v_path.read_text(encoding="utf-8"))
-                    shot["viseme_summary"] = {
-                        "duration_sec": v_json.get("duration_sec", 0.0),
-                        "total_frames": v_json.get("total_frames", 0),
-                        "mouth_sequence": [k["mouth_shape"] for k in v_json.get("keyframes", [])[:18]],
-                    }
-        except Exception:
-            storyboard_data = None
-
     with STATE_LOCK:
-        video_file = WORKSPACE_DIR / "final_cinematic_movie.mp4"
-        auth_state = discover_and_bind_antigravity_2_auth()
-        return {
-            **PIPELINE_STATE,
-            "video_ready": video_file.exists() and video_file.stat().st_size > 1000,
-            "storyboard": storyboard_data,
-            "antigravity_auth": {
-                "authenticated": auth_state["authenticated"],
-                "method": auth_state["method"],
-                "account": auth_state["account"],
-            },
-        }
+        state = {**PIPELINE_STATE, "logs": list(PIPELINE_STATE["logs"])}
+    storyboard_data = None
+    sb_path = Path(state.get("storyboard_path") or "")
+    if sb_path.is_file():
+        storyboard_data = json.loads(sb_path.read_text(encoding="utf-8"))
+        for shot in storyboard_data.get("shots", []):
+            dialogue = shot.get("dialogue", {})
+            v_path = Path(dialogue.get("viseme_json_path", ""))
+            if v_path.is_file():
+                v_json = json.loads(v_path.read_text(encoding="utf-8"))
+                shot["viseme_summary"] = {
+                    "duration_sec": v_json.get("duration_sec", 0.0),
+                    "total_frames": v_json.get("total_frames", 0),
+                    "mouth_sequence": [k["mouth_shape"] for k in v_json.get("keyframes", [])[:18]],
+                }
+            raw = Path(shot.get("transition", {}).get("raw_render_path", ""))
+            shot["audio_ready"] = shot.get("status") in ("audio_ready", "rendering", "rendered") and Path(dialogue.get("wav_path", "")).is_file()
+            shot["thumbnail_ready"] = raw.with_suffix(".jpg").is_file() if raw.is_file() else False
+            shot["preview_ready"] = (sb_path.parent / "temp_muxed_shots" / f"{shot['shot_id']}_muxed.mp4").is_file() and state["status"] == "completed"
+    auth = discover_and_bind_antigravity_2_auth()
+    return {**state, "video_ready": _video_is_ready(state), "storyboard": storyboard_data,
+            "antigravity_auth": {key: auth[key] for key in ("authenticated", "method", "account")}}
+
+
+def _current_shot(shot_id: str, job_id: str):
+    with STATE_LOCK:
+        if not job_id or job_id != PIPELINE_STATE.get("job_id"):
+            raise HTTPException(status_code=404, detail="Cảnh không thuộc lần tạo hiện tại.")
+        path = Path(PIPELINE_STATE.get("storyboard_path") or "")
+    if path.is_file():
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for shot in data.get("shots", []):
+            if shot.get("shot_id") == shot_id:
+                return shot, path.parent
+    raise HTTPException(status_code=404, detail="Không tìm thấy cảnh quay.")
 
 
 @app.get("/api/video")
-def stream_final_video():
-    video_file = WORKSPACE_DIR / "final_cinematic_movie.mp4"
-    if not video_file.exists():
-        raise HTTPException(status_code=404, detail="Chưa có file video đầu ra.")
-    return FileResponse(
-        path=str(video_file),
-        media_type="video/mp4",
-        filename="final_cinematic_movie.mp4",
-    )
+def stream_final_video(job_id: str = ""):
+    with STATE_LOCK:
+        if job_id and job_id != PIPELINE_STATE.get("job_id"):
+            raise HTTPException(status_code=404, detail="Video không thuộc lần tạo hiện tại.")
+        if not _video_is_ready(PIPELINE_STATE):
+            raise HTTPException(status_code=404, detail="Chưa có video đã kiểm tra chất lượng.")
+        video_file = PIPELINE_STATE["video_path"]
+    return FileResponse(path=video_file, media_type="video/mp4", filename="final_cinematic_movie.mp4",
+                        content_disposition_type="inline", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/audio/{shot_id}")
-def stream_shot_audio(shot_id: str):
-    wav_file = WORKSPACE_DIR / "audio_wav" / f"{shot_id}.wav"
-    if not wav_file.exists():
-        raise HTTPException(status_code=404, detail="Không tìm thấy file âm thanh của cảnh này.")
-    return FileResponse(path=str(wav_file), media_type="audio/wav")
+def stream_shot_audio(shot_id: str, job_id: str = ""):
+    shot, _ = _current_shot(shot_id, job_id)
+    wav_file = Path(shot["dialogue"]["wav_path"])
+    if shot.get("status") not in ("audio_ready", "rendering", "rendered") or not wav_file.is_file():
+        raise HTTPException(status_code=404, detail="Giọng đọc cảnh này chưa sẵn sàng.")
+    return FileResponse(path=str(wav_file), media_type="audio/wav", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/shots/{shot_id}/{media}")
+def stream_shot_preview(shot_id: str, media: str, job_id: str = ""):
+    shot, run_dir = _current_shot(shot_id, job_id)
+    if media == "thumbnail":
+        path = Path(shot["transition"]["raw_render_path"]).with_suffix(".jpg")
+        mime = "image/jpeg"
+    elif media == "video":
+        with STATE_LOCK:
+            if PIPELINE_STATE["status"] != "completed":
+                raise HTTPException(status_code=404, detail="Cảnh quay chưa dựng xong.")
+        path = run_dir / "temp_muxed_shots" / f"{shot_id}_muxed.mp4"
+        mime = "video/mp4"
+    else:
+        raise HTTPException(status_code=404, detail="Không tìm thấy nội dung.")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Hình ảnh cảnh này chưa sẵn sàng.")
+    return FileResponse(path=str(path), media_type=mime, headers={"Cache-Control": "no-store"})
 
 
 STUDIO_HTML = """<!DOCTYPE html>
@@ -531,17 +581,17 @@ STUDIO_HTML = """<!DOCTYPE html>
       <div class="panel-body">
         <div>
           <label for="promptInput">NHẬP YÊU CẦU TẠO PHIM CHO ÔNG ĐẠO DIỄN:</label>
-          <textarea id="promptInput" placeholder="Nhập chủ đề, tình huống hoặc lời thoại bạn muốn tạo phim...">Cuộc tranh luận lúc nửa đêm giữa hai kỹ sư Minh và Lan về việc kích hoạt hệ thống bảo mật AI trước khi máy chủ trung tâm bị quá tải.</textarea>
+          <textarea id="promptInput" placeholder="Nhập chủ đề hoặc bắt đầu bằng Kịch bản: kèm nội dung lời kể...">Tạo truyện cổ tích Thánh Gióng</textarea>
         </div>
 
         <div>
           <label>KỊCH BẢN MẪU NHANH:</label>
           <div class="preset-chips">
-            <button class="chip" onclick="setPreset('Cuộc đối thoại căng thẳng giữa Minh và Lan về lỗ hổng bảo mật cấp độ cao trong phòng máy chủ lúc nửa đêm. Cảnh 1 thiết lập không gian. Cảnh 2 cận mặt qua vai tranh luận. Cảnh 3 chốt phương án xử lý.')">
-              🎬 Mẫu 1: Đối thoại Bảo mật Phòng Server (3 cảnh)
+            <button class="chip" onclick="setPreset('Tạo truyện cổ tích Thánh Gióng')">
+              Thánh Gióng — bản kể 8 cảnh
             </button>
-            <button class="chip" onclick="setPreset('Minh thuyết trình kế hoạch kiến trúc đồ họa 3D chuẩn điện ảnh trên máy trạm Dell Precision 7530. Lan kiểm tra thông số ống kính 85mm f/2.0 và xác nhận đồng bộ khẩu hình một trăm phần trăm.')">
-              🎥 Mẫu 2: Kiến trúc Phim 3D Chuẩn Rạp (3 cảnh)
+            <button class="chip" onclick="setPreset('Tạo truyện cổ tích Thạch Sanh')">
+              Thạch Sanh — bản kể 4 cảnh
             </button>
           </div>
         </div>
@@ -550,15 +600,15 @@ STUDIO_HTML = """<!DOCTYPE html>
           🚀 PHÂN TÍCH KỊCH BẢN &amp; XUẤT PHIM ĐIỆN ẢNH
         </button>
 
-        <div class="spec-box">
-          <div style="font-weight:700; color:var(--accent-gold); margin-bottom:2px;">THÔNG SỐ KỸ THUẬT ĐÃ KHÓA:</div>
+        <details class="spec-box">
+          <summary style="font-weight:700; color:var(--accent-gold); margin-bottom:2px;">Thông số khi có đủ tài nguyên 3D</summary>
           <div class="spec-row"><span>Quy tắc Góc máy:</span><strong>180-Degree Rule (SIDE_A)</strong></div>
           <div class="spec-row"><span>Ống kính &amp; Xóa phông:</span><strong>50mm–85mm | DoF f/2.0</strong></div>
           <div class="spec-row"><span>Ánh sáng &amp; Hệ màu:</span><strong>3-Point Light + AgX + LUT</strong></div>
           <div class="spec-row"><span>Khẩu hình (Tầng 2):</span><strong>Rhubarb (A, O, E, M, F)</strong></div>
           <div class="spec-row"><span>Kỹ thuật Dựng (Tầng 4):</span><strong>J-Cut / L-Cut (0.3s) + 2.35:1</strong></div>
           <div class="spec-row"><span>Giới hạn Texture VRAM:</span><strong>Tối đa 2048px + Instancing</strong></div>
-        </div>
+        </details>
       </div>
     </section>
 
@@ -594,7 +644,7 @@ STUDIO_HTML = """<!DOCTYPE html>
 
         <div class="progress-wrap">
           <div class="progress-top">
-            <span id="progressMsg">Chờ lệnh từ Đạo diễn...</span>
+            <span id="progressMsg" role="status" aria-live="polite">Chờ lệnh từ Đạo diễn...</span>
             <strong id="progressPct">0%</strong>
           </div>
           <div class="progress-track">
@@ -614,7 +664,7 @@ STUDIO_HTML = """<!DOCTYPE html>
 
         <div class="action-bar">
           <span style="font-size:12px; color:var(--text-muted);">
-            Đầu ra chuẩn: <code>workspace/final_cinematic_movie.mp4</code>
+            Video hoàn chỉnh đã kiểm tra hình ảnh và âm thanh
           </span>
           <a id="downloadBtn" href="/api/video" download="final_cinematic_movie.mp4" class="btn-download" style="display:none;">
             ⬇ TẢI VIDEO MP4 VỀ MÁY
@@ -634,6 +684,7 @@ STUDIO_HTML = """<!DOCTYPE html>
         <span>3. Hồ Sơ Phân Cảnh (storyboard.json)</span>
         <span id="shotCountBadge">0 Cảnh</span>
       </div>
+      <p id="generationNotice" role="status" style="padding:12px 16px;color:var(--accent-gold);font-size:13px;line-height:1.6;"></p>
       <div class="panel-body" id="storyboardContainer">
         <div style="color:var(--text-muted); font-size:13px; text-align:center; padding-top:30px;">
           Dữ liệu phân cảnh, tọa độ Camera 3D, file âm thanh <code>.wav</code> và chuỗi khẩu hình <code>A, O, E, M, F</code> sẽ hiển thị chi tiết tại đây ngay khi Tầng 1 &amp; Tầng 2 hoàn tất.
@@ -645,6 +696,10 @@ STUDIO_HTML = """<!DOCTYPE html>
   <script>
     let lastVideoTimestamp = 0;
     let pollTimer = null;
+    let lastStoryboardKey = '';
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
+    }
 
     function setPreset(text) {
       document.getElementById('promptInput').value = text;
@@ -690,36 +745,42 @@ STUDIO_HTML = """<!DOCTYPE html>
       }
     }
 
-    function renderStoryboardInspector(storyboard, videoTimestamp) {
-      if (!storyboard || !storyboard.shots) return;
+    function renderStoryboardInspector(storyboard, jobId) {
+      const key = JSON.stringify([jobId, storyboard]);
+      if (key === lastStoryboardKey) return;
+      lastStoryboardKey = key;
       const container = document.getElementById('storyboardContainer');
-      const shots = storyboard.shots;
+      const shots = storyboard?.shots || [];
       document.getElementById('shotCountBadge').textContent = shots.length + ' Cảnh';
-
+      document.getElementById('generationNotice').textContent = storyboard?.project_meta?.generation_notice || '';
+      if (!shots.length) {
+        container.innerHTML = '<p style="color:var(--text-muted);padding:16px;">Chưa có phân cảnh cho yêu cầu hiện tại.</p>';
+        return;
+      }
+      const statusLabels = {planned:'Đã lập cảnh', audio_ready:'Đã có giọng đọc', rendering:'Đang tạo hình', rendered:'Đã có hình'};
       container.innerHTML = shots.map(shot => {
         const cam = shot.camera || {};
-        const loc = (cam.location_xyz || [0,0,0]).join(', ');
-        const rack = (shot.rack_focus && shot.rack_focus.enabled) ? 'Bật (Trượt nét mắt)' : 'Khóa nét tĩnh';
         const vSum = shot.viseme_summary || {};
-        const mouths = (vSum.mouth_sequence || []).map(m => `<span class="v-pill">${m}</span>`).join('');
-
+        const id = encodeURIComponent(shot.shot_id);
+        const query = '?job_id=' + encodeURIComponent(jobId);
+        const speaker = storyboard.characters?.[shot.speaker]?.display_name || shot.speaker;
+        const duration = Number(shot.dialogue?.duration_sec || vSum.duration_sec || 0);
         return `
           <div class="shot-card">
             <div class="shot-head">
-              <span>${shot.shot_id} — ${shot.speaker}</span>
-              <span class="badge-shot">${shot.shot_style} | ${cam.lens_mm || 85}mm f/${cam.aperture_fstop || 2.0}</span>
+              <strong>${escapeHtml(shot.scene_title || shot.shot_id)}</strong>
+              <span class="badge-shot">${escapeHtml(statusLabels[shot.status] || 'Đang chuẩn bị')}</span>
             </div>
-            <div class="shot-dialogue">"${shot.dialogue.text}"</div>
-            <div class="shot-meta">
-              <span><strong>Tọa độ Cam:</strong> [${loc}]</span>
-              <span><strong>Bán cầu 180°:</strong> ${cam.line_of_action_side || 'SIDE_A'}</span>
-              <span><strong>Rack Focus:</strong> ${rack}</span>
-              <span><strong>Dựng cảnh:</strong> ${shot.transition ? shot.transition.cut_type : 'J_CUT'} (0.3s)</span>
-            </div>
-            ${mouths ? `<div><label style="margin-bottom:3px;">Chuỗi Khẩu hình Rhubarb (A,O,E,M,F):</label><div class="viseme-strip">${mouths}</div></div>` : ''}
-            <audio controls preload="none" src="/api/audio/${shot.shot_id}?t=${videoTimestamp}"></audio>
-          </div>
-        `;
+            ${shot.preview_ready ? `<video controls preload="none" poster="/api/shots/${id}/thumbnail${query}" src="/api/shots/${id}/video${query}" style="width:100%;margin:8px 0;border-radius:6px;"></video>` : shot.thumbnail_ready ? `<img src="/api/shots/${id}/thumbnail${query}" alt="${escapeHtml(shot.scene_title)}" style="width:100%;margin:8px 0;border-radius:6px;" loading="lazy">` : ''}
+            <div class="shot-dialogue">${escapeHtml(shot.dialogue?.text)}</div>
+            <p style="color:var(--text-muted);font-size:12px;margin:8px 0;">${escapeHtml(speaker)}${duration ? ' · ' + duration.toFixed(1) + ' giây' : ''}</p>
+            ${shot.audio_ready ? `<audio aria-label="Nghe lời kể ${escapeHtml(shot.scene_title)}" controls preload="none" src="/api/audio/${id}${query}"></audio>` : '<p style="color:var(--text-muted);font-size:12px;">Đang chờ tạo giọng đọc.</p>'}
+            <details style="margin-top:10px;font-size:12px;color:var(--text-muted);"><summary>Thông số cảnh quay</summary>
+              <p>${escapeHtml(shot.shot_id)} · ${escapeHtml(shot.shot_style)} · ${escapeHtml(cam.lens_mm)}mm</p>
+              <p>Vị trí máy: ${escapeHtml((cam.location_xyz || []).join(', '))}</p>
+              <p>Khẩu hình: ${escapeHtml((vSum.mouth_sequence || []).join(' '))}</p>
+            </details>
+          </div>`;
       }).join('');
     }
 
@@ -731,20 +792,20 @@ STUDIO_HTML = """<!DOCTYPE html>
         document.getElementById('progressMsg').textContent = data.message || '';
         document.getElementById('progressPct').textContent = (data.percent || 0) + '%';
         document.getElementById('progressFill').style.width = (data.percent || 0) + '%';
-        document.getElementById('statusBadge').textContent = (data.status || 'idle').toUpperCase();
+        document.getElementById('statusBadge').textContent = ({idle:'Sẵn sàng', running:'Đang tạo', completed:'Hoàn tất', error:'Chưa hoàn tất'})[data.status] || 'Sẵn sàng';
 
         if (data.antigravity_auth) {
           const authPill = document.getElementById('authPill');
           const cliBadge = document.getElementById('cliAuthBadge');
           if (data.antigravity_auth.authenticated) {
-            authPill.innerHTML = `🔑 Antigravity 2.0: <strong>${data.antigravity_auth.account}</strong>`;
+            authPill.textContent = "Antigravity: " + data.antigravity_auth.account;
             authPill.style.color = '#4ade80';
             authPill.style.borderColor = 'rgba(74, 222, 128, 0.4)';
             authPill.style.background = 'rgba(74, 222, 128, 0.1)';
             cliBadge.textContent = 'Đã kết nối: ' + data.antigravity_auth.account;
             cliBadge.style.color = '#4ade80';
           } else {
-            authPill.innerHTML = `⚡ Đạo Diễn Nội Tại (Offline Ready)`;
+            authPill.innerHTML = `Kịch bản có sẵn / Kịch bản của bạn`;
             authPill.style.color = '#94a3b8';
             authPill.style.borderColor = 'rgba(148, 163, 184, 0.3)';
             authPill.style.background = 'rgba(148, 163, 184, 0.08)';
@@ -757,13 +818,14 @@ STUDIO_HTML = """<!DOCTYPE html>
 
         const consoleBox = document.getElementById('consoleBox');
         if (data.logs && data.logs.length) {
-          consoleBox.innerHTML = data.logs.map(l => `<div>${l}</div>`).join('');
+          consoleBox.innerHTML = data.logs.map(l => `<div>${escapeHtml(l)}</div>`).join('');
           consoleBox.scrollTop = consoleBox.scrollHeight;
         }
 
-        if (data.storyboard) {
-          renderStoryboardInspector(data.storyboard, data.video_timestamp || 1);
-        }
+        renderStoryboardInspector(data.storyboard, data.job_id);
+        const isIllustration = data.storyboard?.project_meta?.render_mode === 'illustrated_2d';
+        document.querySelector('#stageCard3 .stage-name').textContent = isIllustration ? 'Hình minh họa 2D' : 'Blender EEVEE 3D';
+        document.querySelector('#stageCard3 .stage-hw').textContent = isIllustration ? 'Cảnh có chuyển động' : 'Blender + tài nguyên 3D';
 
         const btn = document.getElementById('renderBtn');
         btn.disabled = (data.status === 'running');
@@ -774,12 +836,24 @@ STUDIO_HTML = """<!DOCTYPE html>
           const placeholder = document.getElementById('videoPlaceholder');
           const dlBtn = document.getElementById('downloadBtn');
 
-          player.src = '/api/video?t=' + lastVideoTimestamp;
+          player.src = '/api/video?job_id=' + encodeURIComponent(data.job_id) + '&t=' + lastVideoTimestamp;
           player.style.display = 'block';
           placeholder.style.display = 'none';
-          dlBtn.href = '/api/video?t=' + lastVideoTimestamp;
+          dlBtn.href = player.src;
           dlBtn.style.display = 'inline-block';
           player.load();
+        } else if (!data.video_ready) {
+          const player = document.getElementById('moviePlayer');
+          if (player.hasAttribute('src')) {
+            player.pause();
+            player.removeAttribute('src');
+            player.load();
+          }
+          player.style.display = 'none';
+          document.getElementById('videoPlaceholder').style.display = 'block';
+          document.getElementById('videoPlaceholder').textContent = data.status === 'error' ? data.message : 'Video sẽ xuất hiện sau khi kiểm tra hình ảnh và âm thanh hoàn tất.';
+          document.getElementById('downloadBtn').style.display = 'none';
+          lastVideoTimestamp = 0;
         }
       } catch (err) {
         console.error('Lỗi lấy trạng thái:', err);

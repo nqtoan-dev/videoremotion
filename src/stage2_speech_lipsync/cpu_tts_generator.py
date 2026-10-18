@@ -5,12 +5,13 @@ import struct
 import shutil
 import asyncio
 import subprocess
+from array import array
 from pathlib import Path
 from typing import Dict, Optional
 
-# Khóa cứng GPU để Tầng 2 tốn đúng 0 MB VRAM trên Quadro P2000
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
-os.environ["OMP_NUM_THREADS"] = "12"
+# Restrict only the TTS child process. The renderer and NVENC still need the GPU.
+def _tts_cpu_env():
+    return {**os.environ, "CUDA_VISIBLE_DEVICES": "", "OMP_NUM_THREADS": "12"}
 
 EMOTION_PROSODY_MAP: Dict[str, Dict[str, float]] = {
     "calm":               {"speed": 0.95, "pitch_st": -0.5, "bass_gain_db": 2.0},
@@ -24,7 +25,18 @@ EMOTION_PROSODY_MAP: Dict[str, Dict[str, float]] = {
 async def _edge_tts_save(text: str, mp3_path: str, voice: str = "vi-VN-NamMinhNeural"):
     import edge_tts
     communicate = edge_tts.Communicate(text, voice)
-    await communicate.save(mp3_path)
+    await asyncio.wait_for(communicate.save(mp3_path), timeout=30)
+
+
+def validate_speech_wav(wav_path: Path) -> float:
+    with wave.open(str(wav_path), "rb") as wf:
+        if wf.getsampwidth() != 2 or wf.getnframes() == 0:
+            raise RuntimeError("Giọng đọc phải là WAV PCM 16-bit và có dữ liệu.")
+        duration = wf.getnframes() / float(wf.getframerate())
+        samples = array("h", wf.readframes(wf.getnframes()))
+    if duration < 0.2 or max((abs(s) for s in samples), default=0) < 32:
+        raise RuntimeError("Giọng đọc bị rỗng hoặc im lặng; hãy thử tạo lại.")
+    return duration
 
 
 def generate_vietnamese_tts(
@@ -33,12 +45,15 @@ def generate_vietnamese_tts(
     voice: str = "vi-VN-NamMinhNeural"
 ) -> float:
     """
-    Tạo file âm thanh .wav tiếng Việt chất lượng cao bằng Edge-TTS (AI Neural),
-    với gTTS và Bộ tạo sóng âm chuẩn hóa làm fallback để đảm bảo 100% không bao giờ sinh file rỗng.
+    Tạo giọng đọc thật bằng Edge-TTS hoặc gTTS; báo lỗi nếu cả hai không hoạt động.
     Trả về thời lượng thực tế của file âm thanh (giây).
     """
     output_wav.parent.mkdir(parents=True, exist_ok=True)
+    if not text.strip():
+        raise ValueError("Cảnh quay chưa có lời thoại để tạo giọng đọc.")
+    output_wav.unlink(missing_ok=True)
     temp_mp3 = output_wav.with_suffix(".temp_tts.mp3")
+    temp_mp3.unlink(missing_ok=True)
 
     tts_generated = False
 
@@ -49,7 +64,7 @@ def generate_vietnamese_tts(
             subprocess.run([
                 "ffmpeg", "-y", "-i", str(temp_mp3),
                 "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2",
-                str(output_wav)
+                "-af", "loudnorm=I=-16:TP=-1.5:LRA=11", str(output_wav)
             ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             tts_generated = True
     except Exception as exc:
@@ -57,36 +72,31 @@ def generate_vietnamese_tts(
 
     # Ưu tiên 2: gTTS (Google Translate TTS tiếng Việt)
     if not tts_generated:
+        temp_mp3.unlink(missing_ok=True)
         try:
             from gtts import gTTS
-            gTTS(text=text, lang="vi").save(str(temp_mp3))
+            gTTS(text=text, lang="vi", timeout=(5, 20)).save(str(temp_mp3))
             if temp_mp3.exists() and temp_mp3.stat().st_size > 1000:
                 subprocess.run([
                     "ffmpeg", "-y", "-i", str(temp_mp3),
                     "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2",
-                    str(output_wav)
+                    "-af", "loudnorm=I=-16:TP=-1.5:LRA=11", str(output_wav)
                 ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 tts_generated = True
         except Exception as exc:
-            print(f"[STAGE 2] gTTS gặp lỗi ({exc}), chuyển sang sóng âm giả lập...")
+            print(f"[STAGE 2] gTTS gặp lỗi ({exc}).")
 
     if temp_mp3.exists():
         temp_mp3.unlink(missing_ok=True)
 
-    # Ưu tiên 3: Fallback tạo sóng âm ngữ âm chuẩn hóa (phục vụ test/CI hoặc khi mất mạng hoàn toàn)
-    if not tts_generated or not output_wav.exists() or output_wav.stat().st_size < 1000:
-        _generate_fallback_speech_waveform(text, output_wav, speed=1.0)
-
-    # Đo thời lượng thực tế của giọng đọc từ file WAV
-    with wave.open(str(output_wav), "rb") as wf:
-        frames = wf.getnframes()
-        rate = wf.getframerate()
-        duration = frames / float(rate)
-
-    if duration < 0.5:
-        duration = 1.0
-
-    return round(duration, 2)
+    if not tts_generated:
+        output_wav.unlink(missing_ok=True)
+        raise RuntimeError("Không tạo được giọng đọc tiếng Việt. Kiểm tra kết nối Edge-TTS/gTTS hoặc cài mô hình Piper.")
+    try:
+        return validate_speech_wav(output_wav)
+    except Exception:
+        output_wav.unlink(missing_ok=True)
+        raise
 
 
 def synthesize_dialogue_cpu_xeon(
@@ -102,6 +112,8 @@ def synthesize_dialogue_cpu_xeon(
     """
     output_wav_path.parent.mkdir(parents=True, exist_ok=True)
     text = dialogue_cfg.get("text", "")
+    if not text.strip():
+        raise ValueError("Cảnh quay chưa có lời thoại để tạo giọng đọc.")
 
     # Chọn giọng đọc phù hợp
     preset = voice_profile.get("voice_preset", "").lower()
@@ -123,15 +135,14 @@ def synthesize_dialogue_cpu_xeon(
             "--length_scale", str(length_scale),
             "--output_file", str(raw_tts_wav)
         ]
-        subprocess.run(cmd_tts, input=text, text=True, check=True, encoding="utf-8")
+        subprocess.run(cmd_tts, input=text, text=True, check=True, encoding="utf-8", env=_tts_cpu_env())
         subprocess.run([
             "ffmpeg", "-y", "-i", str(raw_tts_wav),
             "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2",
             str(output_wav_path)
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         raw_tts_wav.unlink(missing_ok=True)
-        with wave.open(str(output_wav_path), "rb") as wf:
-            dur = round(wf.getnframes() / float(wf.getframerate()), 2)
+        dur = validate_speech_wav(output_wav_path)
         dialogue_cfg["duration_sec"] = dur
     else:
         dur = generate_vietnamese_tts(text=text, output_wav=output_wav_path, voice=voice)
@@ -141,7 +152,7 @@ def synthesize_dialogue_cpu_xeon(
 
 
 def _generate_fallback_speech_waveform(text: str, wav_path: Path, speed: float = 1.0):
-    """Tạo sóng âm có chu kỳ âm tiết thực tế (dùng khi chạy kiểm thử tự động offline)."""
+    """Test fixture only. Never use generated tones as a production voice."""
     sample_rate = 24000
     words = text.split()
     duration_sec = max(1.8, (len(words) * 0.35) / max(speed, 0.5))

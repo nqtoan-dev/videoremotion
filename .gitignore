@@ -20,6 +20,11 @@ workspace/visemes/*
 workspace/raw_renders/*
 workspace/temp_muxed_shots/
 workspace/final_cinematic_movie.mp4
+workspace/jobs/
+workspace/latest_job.json
+workspace/*.verified.json
+workspace/*.log
+workspace/current_video_frame.jpg
 !workspace/storyboard.json
 
 # IDE & OS

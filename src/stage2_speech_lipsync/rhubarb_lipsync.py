@@ -171,6 +171,8 @@ def run_rhubarb_lipsync_on_xeon(
         "total_frames": total_frames,
         "keyframes": keyframes,
     }
-    viseme_json_output_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    temporary = viseme_json_output_path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    temporary.replace(viseme_json_output_path)
     raw_rhubarb_out.unlink(missing_ok=True)
     return result

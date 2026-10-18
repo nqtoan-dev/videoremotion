@@ -6,20 +6,21 @@ import subprocess
 from pathlib import Path
 from typing import Dict
 from PIL import Image, ImageDraw, ImageFont
+from src.stage3_blender_eevee.illustrations import draw_giong_scene, draw_studio_scene
 
 
 def is_valid_blend_file(blend_path: Path) -> bool:
     """Kiểm tra file .blend có phải là file nhị phân thật của Blender (bắt đầu bằng 'BLENDER') hay chỉ là placeholder."""
-    if not blend_path.exists() or blend_path.stat().st_size < 12:
+    if not blend_path.is_file() or blend_path.stat().st_size < 12:
         return False
-    header = blend_path.read_bytes()[:12]
+    with blend_path.open("rb") as f:
+        header = f.read(12)
     return header.startswith(b"BLENDER")
 
 
 def render_visual_shot_guaranteed(shot: Dict, storyboard: Dict, out_path: Path, fps: int = 24) -> Path:
     """
-    Đảm bảo 100% tạo ra video có cảnh nền 2.5D/3D minh họa, hiệu ứng chuyển động camera,
-    tiêu đề phân cảnh và phụ đề câu chuyện tiếng Việt rõ nét, tuyệt đối không dùng màn hình đen.
+    Kết xuất minh họa 2D có chuyển động, tiêu đề và phụ đề tiếng Việt.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     frames_dir = out_path.parent / f"frames_{shot['shot_id']}"
@@ -39,16 +40,20 @@ def render_visual_shot_guaranteed(shot: Dict, storyboard: Dict, out_path: Path, 
     elif isinstance(shot.get("dialogue"), dict) and "duration_sec" in shot["dialogue"]:
         duration = float(shot["dialogue"]["duration_sec"])
 
-    duration = max(2.5, round(duration, 2))
-    total_frames = max(int(duration * fps), 24)
+    total_frames = math.ceil((duration + 0.3) * fps)
     width, height = 1920, 1080
 
     sky_rgb = [int(c * 255) for c in shot.get("sky_color", [0.15, 0.28, 0.38])]
     ground_rgb = [int(c * 255) for c in shot.get("ground_color", [0.22, 0.18, 0.12])]
-    title_text = shot.get("scene_title", "Truyện Cổ Tích: Thạch Sanh")
+    title_text = shot.get("scene_title", storyboard.get("project_meta", {}).get("title", ""))
     dialogue_raw = shot.get("dialogue", "")
     dialogue_text = dialogue_raw.get("text", "") if isinstance(dialogue_raw, dict) else str(dialogue_raw)
-    theme = shot.get("visual_theme", "forest_banyan_tree")
+    theme = shot.get("visual_theme", "")
+    known_themes = {"forest_banyan_tree", "temple_night_battle", "deep_cave_rescue", "royal_palace_victory", "studio_tech",
+                    "giong_village", "giong_envoy", "giong_growing", "giong_forge", "giong_battle", "giong_bamboo", "giong_ascension", "giong_shrine"}
+    if theme not in known_themes:
+        raise RuntimeError(f"Chưa có hình minh họa cho chủ đề '{theme}'. Cần bổ sung tài nguyên cảnh quay phù hợp.")
+    output_size = tuple(storyboard.get("project_meta", {}).get("resolution", [1920, 1080]))
 
     # Tải font hỗ trợ Unicode tiếng Việt trên Windows / Linux / macOS
     font_paths = [
@@ -139,51 +144,60 @@ def render_visual_shot_guaranteed(shot: Dict, storyboard: Dict, out_path: Path, 
             draw.ellipse([width * 0.5 - 45, horizon_y - 40, width * 0.5 + 45, horizon_y + 15], fill=(50, 50, 55))
             draw.ellipse([width * 0.5 - 35, horizon_y - 35, width * 0.5 + 35, horizon_y - 15], fill=(245, 245, 240))
 
-        # 5. Nhân vật chính (Thạch Sanh) có chuyển động nhịp nhàng
+        if theme.startswith("giong_"):
+            draw_giong_scene(draw, theme, t, horizon_y)
+        elif theme == "studio_tech":
+            draw_studio_scene(draw, t, horizon_y)
+
+        # Thạch Sanh's character is used only in his own story.
         bob_y = math.sin(t * 3 * math.pi) * 8
         hero_x = int(width * 0.52 + math.sin(t * 1.5 * math.pi) * 20)
         hero_y = int(horizon_y + 25 + bob_y)
 
         # Đầu và khăn quấn
-        draw.ellipse([hero_x - 38, hero_y - 200, hero_x + 38, hero_y - 124], fill=(240, 195, 155))
-        draw.ellipse([hero_x - 40, hero_y - 212, hero_x + 40, hero_y - 175], fill=(130, 75, 40))
-        # Thân áo nâu dân dã / chiến binh
-        draw.rectangle([hero_x - 48, hero_y - 124, hero_x + 48, hero_y], fill=(115, 68, 38))
-        draw.rectangle([hero_x - 46, hero_y - 45, hero_x + 46, hero_y - 25], fill=(50, 45, 40))
-        # Chân
-        draw.rectangle([hero_x - 35, hero_y, hero_x - 10, hero_y + 90], fill=(95, 55, 32))
-        draw.rectangle([hero_x + 10, hero_y, hero_x + 35, hero_y + 90], fill=(95, 55, 32))
+        if not theme.startswith("giong_") and theme != "studio_tech":
+            draw.ellipse([hero_x - 38, hero_y - 200, hero_x + 38, hero_y - 124], fill=(240, 195, 155))
+            draw.ellipse([hero_x - 40, hero_y - 212, hero_x + 40, hero_y - 175], fill=(130, 75, 40))
+            # Thân áo nâu dân dã / chiến binh
+            draw.rectangle([hero_x - 48, hero_y - 124, hero_x + 48, hero_y], fill=(115, 68, 38))
+            draw.rectangle([hero_x - 46, hero_y - 45, hero_x + 46, hero_y - 25], fill=(50, 45, 40))
+            # Chân
+            draw.rectangle([hero_x - 35, hero_y, hero_x - 10, hero_y + 90], fill=(95, 55, 32))
+            draw.rectangle([hero_x + 10, hero_y, hero_x + 35, hero_y + 90], fill=(95, 55, 32))
 
-        # Vũ khí (Búa thần hoặc Cung tên vàng)
-        draw.line([(hero_x + 45, hero_y - 110), (hero_x + 85, hero_y + 40)], fill=(80, 50, 30), width=7)
-        draw.rectangle([hero_x + 70, hero_y - 130, hero_x + 105, hero_y - 95], fill=(210, 180, 90))
+            # Vũ khí (Búa thần hoặc Cung tên vàng)
+            draw.line([(hero_x + 45, hero_y - 110), (hero_x + 85, hero_y + 40)], fill=(80, 50, 30), width=7)
+            draw.rectangle([hero_x + 70, hero_y - 130, hero_x + 105, hero_y - 95], fill=(210, 180, 90))
 
-        # 6. Banner Tiêu đề phân cảnh phía trên màn hình
-        draw.rectangle([60, 40, width - 60, 125], fill=(15, 22, 34))
-        draw.rectangle([60, 40, width - 60, 125], outline=(255, 215, 0), width=2)
-        draw.text((95, 58), title_text, fill=(255, 215, 0), font=font_title)
+        # Place all text inside the CinemaScope safe area.
+        draw.rectangle([60, 145, width - 60, 225], fill=(15, 22, 34), outline=(211, 178, 92), width=2)
+        title_font = font_title
+        if draw.textlength(title_text, font=title_font) > width - 180:
+            title_font = font_sub
+        draw.text((95, 160), title_text, fill=(245, 215, 139), font=title_font)
 
-        # 7. Khung Phụ đề câu chuyện Thạch Sanh phía dưới màn hình
-        draw.rectangle([70, height - 210, width - 70, height - 40], fill=(12, 16, 24))
-        draw.rectangle([70, height - 210, width - 70, height - 40], outline=(100, 140, 190), width=2)
-
-        # Tự động ngắt dòng thông minh cho tiếng Việt
         words = dialogue_text.split()
-        lines, cur = [], ""
-        for w in words:
-            if len(cur + " " + w) <= 65:
-                cur = (cur + " " + w).strip()
+        lines, current = [], ""
+        for word in words:
+            candidate = (current + " " + word).strip()
+            if current and draw.textlength(candidate, font=font_sub) > width - 220:
+                lines.append(current)
+                current = word
             else:
-                lines.append(cur)
-                cur = w
-        if cur:
-            lines.append(cur)
-
-        for l_idx, line in enumerate(lines[:3]):
-            draw.text((110, height - 190 + l_idx * 44), line, fill=(255, 255, 255), font=font_sub)
-
+                current = candidate
+        if current:
+            lines.append(current)
+        pages = [lines[i:i + 3] for i in range(0, len(lines), 3)] or [[]]
+        page = pages[min(len(pages) - 1, int(t * len(pages)))]
+        draw.rectangle([70, 780, width - 70, 940], fill=(12, 16, 24), outline=(100, 140, 190), width=2)
+        for line_index, line in enumerate(page):
+            draw.text((110, 795 + line_index * 43), line, fill=(255, 255, 255), font=font_sub)
+        if output_size != (width, height):
+            img = img.resize(output_size, Image.Resampling.LANCZOS)
+        if f == 0:
+            img.save(out_path.with_suffix(".jpg"), quality=85)
         frame_file = frames_dir / f"frame_{f:04d}.png"
-        img.save(frame_file)
+        img.save(frame_file, compress_level=1)
 
     # Đóng gói chuỗi ảnh PNG thành file MP4 hoàn chỉnh
     cmd = [
@@ -193,7 +207,7 @@ def render_visual_shot_guaranteed(shot: Dict, storyboard: Dict, out_path: Path, 
         "-c:v", "libx264",
         "-preset", "fast",
         "-pix_fmt", "yuv420p",
-        "-crf", "18",
+        "-crf", "18", "-movflags", "+faststart",
         str(out_path.as_posix()),
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -209,10 +223,8 @@ def render_visual_shot_guaranteed(shot: Dict, storyboard: Dict, out_path: Path, 
 
 def render_single_shot_headless(storyboard_path: Path, shot_id: str) -> Path:
     """
-    Kết xuất cảnh quay chất lượng cao:
-    - Nếu có Blender và file .blend thật: gọi Blender EEVEE Headless.
-    - Nếu máy chưa cài Blender hoặc file là placeholder: tự động kết xuất bằng Bộ Render 2.5D Điện Ảnh Thạch Sanh,
-      đảm bảo 100% video ra đời có hình ảnh sắc nét, tiêu đề và phụ đề tiếng Việt.
+    Kết xuất theo đúng chế độ được ghi trong kịch bản.
+    Cảnh 3D thiếu tài nguyên phải báo lỗi, không thay bằng minh họa không liên quan.
     """
     storyboard = json.loads(storyboard_path.read_text(encoding="utf-8"))
     blend_file = Path(storyboard.get("scene", {}).get("blend_file", "assets/scenes/studio_office.blend"))
@@ -220,6 +232,8 @@ def render_single_shot_headless(storyboard_path: Path, shot_id: str) -> Path:
     out_video = Path(shot["transition"]["raw_render_path"])
     fps = int(storyboard.get("project_meta", {}).get("fps", 24))
     render_script = Path("src/stage3_blender_eevee/render_shot.py")
+    if storyboard.get("project_meta", {}).get("render_mode") == "illustrated_2d":
+        return render_visual_shot_guaranteed(shot, storyboard, out_video, fps=fps)
 
     blender_bin = shutil.which("blender")
     if blender_bin and is_valid_blend_file(blend_file):
@@ -233,8 +247,6 @@ def render_single_shot_headless(storyboard_path: Path, shot_id: str) -> Path:
             if out_video.exists() and out_video.stat().st_size > 1000:
                 return out_video
         except Exception as exc:
-            print(f"[STAGE 3] Blender EEVEE gặp lỗi ({exc}), kích hoạt Bộ Render Điện Ảnh 2.5D...")
+            raise RuntimeError(f"Blender không kết xuất được cảnh {shot_id}.") from exc
 
-    # Bộ render 2.5D chất lượng cao đảm bảo 100% video có hình ảnh
-    render_visual_shot_guaranteed(shot, storyboard, out_video, fps=fps)
-    return out_video
+    raise RuntimeError("Chưa kết xuất được cảnh 3D. Kiểm tra Blender và các tệp bối cảnh, nhân vật thật.")

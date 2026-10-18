@@ -1,4 +1,5 @@
 from pathlib import Path
+import wave
 from src.stage4_post_nvenc.ffmpeg_nvenc_editor import build_ffmpeg_master_command
 
 def test_stage4_nvenc_jcut_lut_grain_and_cinemascope_command(tmp_path: Path):
@@ -6,7 +7,11 @@ def test_stage4_nvenc_jcut_lut_grain_and_cinemascope_command(tmp_path: Path):
     lut_file.write_text("LUT_3D_SIZE 2\n0.0 0.0 0.0\n1.0 1.0 1.0\n", encoding="utf-8")
 
     room_tone = tmp_path / "room_tone.wav"
-    room_tone.write_bytes(b"RIFF0000WAVEfmt ")
+    with wave.open(str(room_tone), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(24000)
+        wf.writeframes(b"\0\0" * 2400)
 
     storyboard = {
         "project_meta": {
@@ -39,6 +44,6 @@ def test_stage4_nvenc_jcut_lut_grain_and_cinemascope_command(tmp_path: Path):
     # 3. Kiểm tra 3D LUT (.cube) + Hạt phim 35mm + Khung CinemaScope 2.35:1
     assert "lut3d=file=" in cmd_str
     assert "noise=alls=6.5:allf=t+u" in cmd_str
-    assert "drawbox=x=0:y=0:w=iw:h=132:color=black:t=fill" in cmd_str
+    assert "drawbox=x=0:y=0:w=iw:h=ih*0.1222:color=black:t=fill" in cmd_str
     # 4. Kiểm tra cờ nén phần cứng Quadro P2000 NVENC
     assert "-c:v h264_nvenc -preset p6 -cq 18" in cmd_str

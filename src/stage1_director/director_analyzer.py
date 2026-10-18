@@ -9,20 +9,24 @@ def scan_available_3d_assets(assets_root: Path) -> Dict[str, Any]:
     anims_dir = assets_root / "animations"
     luts_dir = assets_root / "luts"
 
-    scenes = [str(p.as_posix()) for p in scenes_dir.glob("*.blend")] if scenes_dir.exists() else []
-    chars = [str(p.as_posix()) for p in chars_dir.glob("*.fbx")] if chars_dir.exists() else []
-    anims = [str(p.as_posix()) for p in anims_dir.glob("*.fbx")] if anims_dir.exists() else []
+    def real_files(directory, suffix, headers):
+        result = []
+        for p in sorted(directory.glob(suffix)):
+            with p.open("rb") as f:
+                if f.read(32).startswith(headers):
+                    result.append(p.as_posix())
+        return result
+
+    scenes = real_files(scenes_dir, "*.blend", (b"BLENDER",))
+    chars = real_files(chars_dir, "*.fbx", (b"Kaydara FBX Binary", b"; FBX"))
+    anims = real_files(anims_dir, "*.fbx", (b"Kaydara FBX Binary", b"; FBX"))
     luts = [str(p.as_posix()) for p in luts_dir.glob("*.cube")] if luts_dir.exists() else []
 
     return {
-        "available_scenes": scenes or ["assets/scenes/studio_office.blend"],
-        "available_characters": chars or ["assets/characters/char_minh.fbx", "assets/characters/char_lan.fbx"],
-        "available_mixamo_animations": anims or [
-            "assets/animations/standing_talking_01.fbx",
-            "assets/animations/standing_explaining_02.fbx",
-            "assets/animations/standing_listening_idle.fbx"
-        ],
-        "available_luts": luts or ["assets/luts/film_kodak_2383.cube"]
+        "available_scenes": scenes,
+        "available_characters": chars,
+        "available_mixamo_animations": anims,
+        "available_luts": luts,
     }
 
 def generate_thach_sanh_storyboard(prompt: str = "") -> Dict[str, Any]:
@@ -97,5 +101,44 @@ QUY TẮC ĐẠO DIỄN BẮT BUỘC:
         f"{schema_instruction.strip()}\n\n"
         f"DANH MỤC TÀI NGUYÊN 3D HIỆN CÓ:\n{json.dumps(inventory, ensure_ascii=False, indent=2)}\n\n"
         f"YÊU CẦU TẠO VIDEO TỪ NGƯỜI DÙNG:\n\"{user_request}\"\n\n"
-        f"Hãy trả về JSON đầy đủ chứa các khóa: project_meta, scene, characters, shots."
+        "Hãy trả về JSON đầy đủ chứa các khóa: project_meta, scene, characters, shots. "
+        "Mỗi shot có shot_id duy nhất, scene_title, speaker, listener (ID trong characters), "
+        "actors (mỗi ID chứa position_xyz), dialogue.text tiếng Việt và visual_theme. "
+        "Phân cảnh phải đúng nội dung yêu cầu; không dùng 3 cảnh đối thoại kỹ thuật mẫu. "
+        "Nếu danh sách tài nguyên rỗng, không được bịa đường dẫn tài nguyên."
     )
+
+
+def generate_thanh_giong_storyboard() -> Dict[str, Any]:
+    """Bản kể ngắn theo truyền thuyết dân gian, dành cho chế độ minh họa 2D.
+
+    References: https://baotanglichsu.vn/vi/Articles/2001/66164/xuat-xu-cua-thanh-giong.html
+    https://baotanglichsu.vn/VI/Articles/3096/11520/quan-the-di-tich-phu-djong-va-hoi-giong.html
+    """
+    beats = [
+        ("Làng Phù Đổng", "giong_village", "Ở làng Phù Đổng, có cậu bé Gióng lên ba vẫn chưa biết nói, biết cười."),
+        ("Lời gọi của sứ giả", "giong_envoy", "Giặc kéo đến. Nghe sứ giả tìm người cứu nước, Gióng bỗng cất tiếng xin ngựa sắt và giáp sắt."),
+        ("Dân làng nuôi Gióng", "giong_growing", "Gióng ăn bao nhiêu cũng không đủ. Dân làng góp gạo nuôi cậu lớn nhanh như thổi."),
+        ("Ngựa sắt và áo giáp", "giong_forge", "Thợ rèn ngày đêm đúc ngựa và vũ khí. Gióng vươn vai thành tráng sĩ, khoác giáp lên đường."),
+        ("Tráng sĩ ra trận", "giong_battle", "Ngựa sắt phun lửa, đưa Gióng xông thẳng vào quân giặc. Tráng sĩ chiến đấu bảo vệ quê hương."),
+        ("Bụi tre bên đường", "giong_bamboo", "Khi vũ khí sắt gãy, Gióng nhổ tre bên đường tiếp tục đánh, khiến quân giặc tháo chạy."),
+        ("Bay về trời", "giong_ascension", "Dẹp yên giặc, Gióng đến núi Sóc, cởi áo giáp rồi cùng ngựa sắt bay lên trời."),
+        ("Người anh hùng còn mãi", "giong_shrine", "Dân làng lập đền tưởng nhớ. Hình ảnh Thánh Gióng sống mãi cùng lòng yêu nước và sức mạnh đoàn kết."),
+    ]
+    return {
+        "project_title": "Thánh Gióng — Người anh hùng làng Phù Đổng",
+        "shots": [
+            {"shot_id": f"SHOT_{i:03d}", "scene_title": f"Cảnh {i}: {title}",
+             "visual_theme": theme, "dialogue": text,
+             "sky_color": [0.24, 0.42, 0.60], "ground_color": [0.30, 0.40, 0.22]}
+            for i, (title, theme, text) in enumerate(beats, 1)
+        ],
+    }
+
+
+def write_storyboard(path: Path, storyboard: Dict[str, Any]):
+    """Readers see a complete snapshot while a render is updating its shots."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(storyboard, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
