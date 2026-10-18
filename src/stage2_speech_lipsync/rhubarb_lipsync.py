@@ -68,10 +68,13 @@ def _analyze_wav_phonemes_cpu_fallback(wav_path: Path) -> Dict:
     """
     with wave.open(str(wav_path), "rb") as wf:
         rate = wf.getframerate()
+        n_channels = wf.getnchannels()
         n_frames = wf.getnframes()
         raw_bytes = wf.readframes(n_frames)
 
-    samples = struct.unpack(f"<{n_frames}h", raw_bytes)
+    total_samples = n_frames * n_channels
+    all_samples = struct.unpack(f"<{total_samples}h", raw_bytes)
+    samples = all_samples[::n_channels] if n_channels > 1 else all_samples
     window_sec = 0.09
     step = max(1, int(rate * window_sec))
     cues = []

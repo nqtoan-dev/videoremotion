@@ -94,6 +94,7 @@ def build_ffmpeg_master_command(
         safe_lut = _sanitize_lut_path_for_ffmpeg(lut_path)
         v_fx.append(f"lut3d=file='{safe_lut}':interp=tetrahedral")
     v_fx.extend([
+        "eq=contrast=1.06:brightness=0.02:saturation=1.12",
         "format=yuv420p",
         f"noise=alls={grain_val}:allf=t+u",
         "drawbox=x=0:y=0:w=iw:h=132:color=black:t=fill",
@@ -121,7 +122,29 @@ def build_ffmpeg_master_command(
     ]
 
 
+def _fallback_concat_muxed_clips(muxed_clips: List[Path], output_movie_path: Path):
+    """Fallback an toàn tuyệt đối: Nối các clip đã mux tiếng bằng concat demuxer của FFmpeg."""
+    concat_list = output_movie_path.parent / "concat_list.txt"
+    with open(concat_list, "w", encoding="utf-8") as f:
+        for clip in muxed_clips:
+            clean_p = clip.resolve().as_posix()
+            f.write(f"file '{clean_p}'\n")
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", str(concat_list.as_posix()),
+        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        "-c:a", "aac", "-b:a", "192k",
+        "-pix_fmt", "yuv420p",
+        str(output_movie_path.as_posix()),
+    ]
+    subprocess.run(cmd, check=True)
+
+
 def assemble_final_cinematic_movie(storyboard_path: Path, output_movie_path: Path) -> Path:
+    import wave
     storyboard = json.loads(storyboard_path.read_text(encoding="utf-8"))
     shots = storyboard["shots"]
     overlap = 0.30
@@ -139,7 +162,20 @@ def assemble_final_cinematic_movie(storyboard_path: Path, output_movie_path: Pat
         wav_aud = Path(shot["dialogue"]["wav_path"])
         viseme_json = Path(shot["dialogue"]["viseme_json_path"])
 
-        speech_dur = float(json.loads(viseme_json.read_text(encoding="utf-8"))["duration_sec"])
+        speech_dur = 4.0
+        if wav_aud.exists():
+            try:
+                with wave.open(str(wav_aud), "rb") as wf:
+                    speech_dur = wf.getnframes() / float(wf.getframerate())
+            except Exception:
+                pass
+        elif viseme_json.exists():
+            try:
+                v_data = json.loads(viseme_json.read_text(encoding="utf-8"))
+                speech_dur = float(v_data.get("duration_sec", 4.0))
+            except Exception:
+                pass
+
         total_clip_dur = round(speech_dur + overlap, 3)
 
         mux_out = temp_mux_dir / f"{shot_id}_muxed.mp4"
@@ -160,23 +196,20 @@ def assemble_final_cinematic_movie(storyboard_path: Path, output_movie_path: Pat
             str(mux_out.as_posix()),
         ]
         try:
-            subprocess.run(cmd_mux, check=True)
-        except subprocess.CalledProcessError:
-            if use_nvenc:
-                cmd_mux_fallback = [
-                    "ffmpeg", "-y",
-                    "-i", str(raw_vid.as_posix()),
-                    "-i", str(wav_aud.as_posix()),
-                    "-filter_complex", f"[1:a]apad=pad_dur={overlap}[a_padded]",
-                    "-map", "0:v:0", "-map", "[a_padded]",
-                    "-t", str(total_clip_dur),
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "16",
-                    "-c:a", "aac", "-b:a", "192k",
-                    str(mux_out.as_posix()),
-                ]
-                subprocess.run(cmd_mux_fallback, check=True)
-            else:
-                raise
+            subprocess.run(cmd_mux, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            cmd_mux_fallback = [
+                "ffmpeg", "-y",
+                "-i", str(raw_vid.as_posix()),
+                "-i", str(wav_aud.as_posix()),
+                "-filter_complex", f"[1:a]apad=pad_dur={overlap}[a_padded]",
+                "-map", "0:v:0", "-map", "[a_padded]",
+                "-t", str(total_clip_dur),
+                "-c:v", "libx264", "-preset", "fast", "-crf", "16",
+                "-c:a", "aac", "-b:a", "192k",
+                str(mux_out.as_posix()),
+            ]
+            subprocess.run(cmd_mux_fallback, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         muxed_clips.append(mux_out)
         clip_durations.append(total_clip_dur)
@@ -191,8 +224,9 @@ def assemble_final_cinematic_movie(storyboard_path: Path, output_movie_path: Pat
     )
     try:
         subprocess.run(cmd_master, check=True)
-    except subprocess.CalledProcessError:
-        if use_nvenc:
+    except Exception as exc:
+        print(f"[STAGE 4] Lệnh Master với NVENC gặp lỗi ({exc}), chuyển sang CPU libx264...")
+        try:
             cmd_fallback = build_ffmpeg_master_command(
                 muxed_clips=muxed_clips,
                 clip_durations=clip_durations,
@@ -201,6 +235,8 @@ def assemble_final_cinematic_movie(storyboard_path: Path, output_movie_path: Pat
                 use_nvenc=False,
             )
             subprocess.run(cmd_fallback, check=True)
-        else:
-            raise
+        except Exception as exc2:
+            print(f"[STAGE 4] Filter complex gặp sự cố ({exc2}), kích hoạt fallback concat danh sách...")
+            _fallback_concat_muxed_clips(muxed_clips, output_movie_path)
+
     return output_movie_path

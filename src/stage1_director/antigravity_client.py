@@ -250,7 +250,109 @@ def _builtin_director_fallback(user_request: str, inventory: Dict[str, Any]) -> 
     Ông Đạo Diễn nội tại: Khi antigravity-cli chưa được cài trong PATH hoặc gặp lỗi kết nối,
     tự động phân tích yêu cầu của người dùng để sinh kịch bản phân cảnh điện ảnh chi tiết.
     """
+    from src.stage1_director.director_analyzer import generate_thach_sanh_storyboard
+
     clean_req = user_request.strip() or "Cuộc đối thoại căng thẳng trong phòng máy chủ"
+    lower_req = clean_req.lower()
+
+    scenes = inventory.get("available_scenes", ["assets/scenes/studio_office.blend"])
+    anims = inventory.get("available_mixamo_animations", [
+        "assets/animations/standing_talking_01.fbx",
+        "assets/animations/standing_explaining_02.fbx",
+        "assets/animations/standing_listening_idle.fbx",
+    ])
+    luts = inventory.get("available_luts", ["assets/luts/film_kodak_2383.cube"])
+
+    anim_talk = anims[0] if len(anims) > 0 else "assets/animations/standing_talking_01.fbx"
+    anim_explain = anims[1] if len(anims) > 1 else anim_talk
+    anim_listen = anims[2] if len(anims) > 2 else anim_talk
+
+    # Phân nhánh ưu tiên tuyệt đối cho Truyện Cổ Tích Thạch Sanh
+    if "thạch sanh" in lower_req or "thach sanh" in lower_req:
+        ts_data = generate_thach_sanh_storyboard(clean_req)
+        ts_shots = []
+        for s in ts_data["shots"]:
+            ts_shots.append({
+                "shot_id": s["shot_id"],
+                "scene_title": s["scene_title"],
+                "shot_style": "ESTABLISHING_WIDE" if s["shot_id"] == "SHOT_001" else "OTS_CLOSE_UP",
+                "speaker": "CHAR_MINH",
+                "listener": "CHAR_LAN",
+                "visual_theme": s["visual_theme"],
+                "sky_color": s["sky_color"],
+                "ground_color": s["ground_color"],
+                "camera_angle": s.get("camera_angle", "wide_establishing"),
+                "actors": {
+                    "CHAR_MINH": {"position_xyz": [-1.1, 0.0, 0.0], "mixamo_animation": anim_talk},
+                    "CHAR_LAN": {"position_xyz": [1.1, 0.0, 0.0], "mixamo_animation": anim_listen},
+                },
+                "dialogue": {
+                    "text": s["dialogue"],
+                    "emotion": "serious_determined",
+                    "speaking_rate_multiplier": 0.98,
+                    "pitch_offset_semitones": -0.5,
+                },
+            })
+
+        return {
+            "project_meta": {
+                "title": "Truyện Cổ Tích: Thạch Sanh",
+                "fps": 24,
+                "resolution": [1920, 1080],
+                "aspect_ratio": "2.35:1",
+                "vram_budget_mb": 3200,
+                "max_texture_size": 2048,
+                "color_management": {
+                    "view_transform": "AgX",
+                    "look": "AgX - High Contrast",
+                    "lut_path": luts[0],
+                    "film_grain_intensity": 6.5,
+                },
+            },
+            "scene": {
+                "scene_id": "SCENE_CO_TICH_THACH_SANH",
+                "blend_file": scenes[0],
+                "room_tone_file": "assets/audio/room_tone_ambience.wav",
+                "room_tone_base_volume": 0.16,
+                "volumetric_lighting": True,
+                "volumetric_density": 0.03,
+                "instanced_props": [],
+            },
+            "characters": {
+                "CHAR_MINH": {
+                    "display_name": "Người Kể Chuyện (Thạch Sanh)",
+                    "fbx_path": "assets/characters/char_minh.fbx",
+                    "armature_name": "Armature_Minh",
+                    "face_mesh_name": "Mesh_Head_Minh",
+                    "eye_bone_name": "Bone_Eye_Target",
+                    "jaw_bone_name": "Bone_Jaw",
+                    "height_m": 1.75,
+                    "voice_profile": {
+                        "engine": "edge_tts",
+                        "voice_preset": "vi-VN-NamMinhNeural",
+                        "base_speed": 1.0,
+                        "base_pitch_semitones": -0.5,
+                    },
+                },
+                "CHAR_LAN": {
+                    "display_name": "Công Chúa Quỳnh Nga",
+                    "fbx_path": "assets/characters/char_lan.fbx",
+                    "armature_name": "Armature_Lan",
+                    "face_mesh_name": "Mesh_Head_Lan",
+                    "eye_bone_name": "Bone_Eye_Target",
+                    "jaw_bone_name": "Bone_Jaw",
+                    "height_m": 1.65,
+                    "voice_profile": {
+                        "engine": "edge_tts",
+                        "voice_preset": "vi-VN-HoaiMyNeural",
+                        "base_speed": 1.0,
+                        "base_pitch_semitones": 0.5,
+                    },
+                },
+            },
+            "shots": ts_shots,
+        }
+
     sentences = [s.strip() for s in re.split(r"[.!?\n]+", clean_req) if len(s.strip()) > 5]
 
     if len(sentences) >= 3:
@@ -265,18 +367,6 @@ def _builtin_director_fallback(user_request: str, inventory: Dict[str, Any]) -> 
         line_1 = f"Chúng ta cần giải quyết ngay bài toán: {clean_req}."
         line_2 = "Mọi thông số bối cảnh và dữ liệu 3D đã được khóa đồng bộ một trăm phần trăm."
         line_3 = "Bắt đầu tiến trình kết xuất điện ảnh ngay lập tức, không để xảy ra bất kỳ sai số nào."
-
-    scenes = inventory.get("available_scenes", ["assets/scenes/studio_office.blend"])
-    anims = inventory.get("available_mixamo_animations", [
-        "assets/animations/standing_talking_01.fbx",
-        "assets/animations/standing_explaining_02.fbx",
-        "assets/animations/standing_listening_idle.fbx",
-    ])
-    luts = inventory.get("available_luts", ["assets/luts/film_kodak_2383.cube"])
-
-    anim_talk = anims[0] if len(anims) > 0 else "assets/animations/standing_talking_01.fbx"
-    anim_explain = anims[1] if len(anims) > 1 else anim_talk
-    anim_listen = anims[2] if len(anims) > 2 else anim_talk
 
     return {
         "project_meta": {
@@ -342,9 +432,13 @@ def _builtin_director_fallback(user_request: str, inventory: Dict[str, Any]) -> 
         "shots": [
             {
                 "shot_id": "SHOT_001",
+                "scene_title": "Cảnh 1: Đặt Vấn Đề Kỹ Thuật",
                 "shot_style": "ESTABLISHING_WIDE",
                 "speaker": "CHAR_MINH",
                 "listener": "CHAR_LAN",
+                "visual_theme": "studio_tech",
+                "sky_color": [0.15, 0.22, 0.32],
+                "ground_color": [0.18, 0.16, 0.20],
                 "actors": {
                     "CHAR_MINH": {"position_xyz": [-1.1, 0.0, 0.0], "mixamo_animation": anim_explain},
                     "CHAR_LAN": {"position_xyz": [1.1, 0.0, 0.0], "mixamo_animation": anim_listen},
@@ -358,9 +452,13 @@ def _builtin_director_fallback(user_request: str, inventory: Dict[str, Any]) -> 
             },
             {
                 "shot_id": "SHOT_002",
+                "scene_title": "Cảnh 2: Tranh Luận Hệ Thống",
                 "shot_style": "OTS_CLOSE_UP",
                 "speaker": "CHAR_LAN",
                 "listener": "CHAR_MINH",
+                "visual_theme": "studio_tech",
+                "sky_color": [0.12, 0.20, 0.35],
+                "ground_color": [0.16, 0.15, 0.22],
                 "actors": {
                     "CHAR_MINH": {"position_xyz": [-1.1, 0.0, 0.0], "mixamo_animation": anim_listen},
                     "CHAR_LAN": {"position_xyz": [1.1, 0.0, 0.0], "mixamo_animation": anim_talk},
@@ -374,9 +472,13 @@ def _builtin_director_fallback(user_request: str, inventory: Dict[str, Any]) -> 
             },
             {
                 "shot_id": "SHOT_003",
+                "scene_title": "Cảnh 3: Khóa Kế Hoạch Thực Thi",
                 "shot_style": "CLOSE_UP",
                 "speaker": "CHAR_MINH",
                 "listener": "CHAR_LAN",
+                "visual_theme": "studio_tech",
+                "sky_color": [0.18, 0.24, 0.38],
+                "ground_color": [0.20, 0.17, 0.24],
                 "actors": {
                     "CHAR_MINH": {"position_xyz": [-1.1, 0.0, 0.0], "mixamo_animation": anim_talk},
                     "CHAR_LAN": {"position_xyz": [1.1, 0.0, 0.0], "mixamo_animation": anim_listen},
@@ -447,6 +549,23 @@ def generate_storyboard_via_antigravity(
     for idx, shot in enumerate(storyboard.get("shots", [])):
         shot_id = shot.get("shot_id", f"SHOT_{idx + 1:03d}")
         shot["shot_id"] = shot_id
+        if "scene_title" not in shot:
+            shot["scene_title"] = f"Phân Cảnh {idx + 1}"
+        if "visual_theme" not in shot:
+            shot["visual_theme"] = "studio_tech"
+        if "sky_color" not in shot:
+            shot["sky_color"] = [0.15, 0.22, 0.32]
+        if "ground_color" not in shot:
+            shot["ground_color"] = [0.18, 0.16, 0.20]
+
+        if isinstance(shot.get("dialogue"), str):
+            shot["dialogue"] = {
+                "text": shot["dialogue"],
+                "emotion": "serious_determined",
+                "speaking_rate_multiplier": 1.0,
+                "pitch_offset_semitones": 0.0,
+            }
+
         spk_id = shot["speaker"]
         lst_id = shot["listener"]
 

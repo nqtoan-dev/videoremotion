@@ -1,6 +1,6 @@
 {
   "project_meta": {
-    "title": "Hai Kỹ Sư Minh Và Lan Tranh Luận Khẩn Cấp Về Việc Ngắt Kết N",
+    "title": "Truyện Cổ Tích: Thạch Sanh",
     "fps": 24,
     "resolution": [
       1920,
@@ -14,41 +14,25 @@
       "look": "AgX - High Contrast",
       "lut_path": "assets/luts/film_kodak_2383.cube",
       "film_grain_intensity": 6.5
+    },
+    "antigravity_auth": {
+      "authenticated": false,
+      "method": "Built-in Director Core (Offline Ready)",
+      "account": "Chưa phát hiện phiên Antigravity 2.0"
     }
   },
   "scene": {
-    "scene_id": "SCENE_STUDIO_OFFICE",
+    "scene_id": "SCENE_CO_TICH_THACH_SANH",
     "blend_file": "assets/scenes/studio_office.blend",
     "room_tone_file": "assets/audio/room_tone_ambience.wav",
     "room_tone_base_volume": 0.16,
     "volumetric_lighting": true,
     "volumetric_density": 0.03,
-    "instanced_props": [
-      {
-        "source_object_name": "Prop_Chair_Master",
-        "instance_locations": [
-          [
-            -2.2,
-            1.4,
-            0.0
-          ],
-          [
-            -2.2,
-            -1.4,
-            0.0
-          ],
-          [
-            2.2,
-            1.4,
-            0.0
-          ]
-        ]
-      }
-    ]
+    "instanced_props": []
   },
   "characters": {
     "CHAR_MINH": {
-      "display_name": "Minh (Đạo diễn Kỹ thuật)",
+      "display_name": "Người Kể Chuyện (Thạch Sanh)",
       "fbx_path": "assets/characters/char_minh.fbx",
       "armature_name": "Armature_Minh",
       "face_mesh_name": "Mesh_Head_Minh",
@@ -56,14 +40,14 @@
       "jaw_bone_name": "Bone_Jaw",
       "height_m": 1.75,
       "voice_profile": {
-        "engine": "kokoro_cpu_int8",
-        "voice_preset": "vn_male_baritone",
-        "base_speed": 0.96,
-        "base_pitch_semitones": -1.2
+        "engine": "edge_tts",
+        "voice_preset": "vi-VN-NamMinhNeural",
+        "base_speed": 1.0,
+        "base_pitch_semitones": -0.5
       }
     },
     "CHAR_LAN": {
-      "display_name": "Lan (Chuyên gia Hệ thống)",
+      "display_name": "Công Chúa Quỳnh Nga",
       "fbx_path": "assets/characters/char_lan.fbx",
       "armature_name": "Armature_Lan",
       "face_mesh_name": "Mesh_Head_Lan",
@@ -71,19 +55,32 @@
       "jaw_bone_name": "Bone_Jaw",
       "height_m": 1.65,
       "voice_profile": {
-        "engine": "kokoro_cpu_int8",
-        "voice_preset": "vn_female_clear",
-        "base_speed": 1.02,
-        "base_pitch_semitones": 1.0
+        "engine": "edge_tts",
+        "voice_preset": "vi-VN-HoaiMyNeural",
+        "base_speed": 1.0,
+        "base_pitch_semitones": 0.5
       }
     }
   },
   "shots": [
     {
       "shot_id": "SHOT_001",
+      "scene_title": "Cảnh 1: Gốc Đa & Nghề Đốn Củi",
       "shot_style": "ESTABLISHING_WIDE",
       "speaker": "CHAR_MINH",
       "listener": "CHAR_LAN",
+      "visual_theme": "forest_banyan_tree",
+      "sky_color": [
+        0.12,
+        0.28,
+        0.18
+      ],
+      "ground_color": [
+        0.22,
+        0.15,
+        0.08
+      ],
+      "camera_angle": "wide_establishing",
       "actors": {
         "CHAR_MINH": {
           "position_xyz": [
@@ -91,7 +88,7 @@
             0.0,
             0.0
           ],
-          "mixamo_animation": "assets/animations/standing_listening_idle.fbx",
+          "mixamo_animation": "assets/animations/standing_explaining_02.fbx",
           "rotation_euler_deg": [
             0.0,
             0.0,
@@ -113,12 +110,13 @@
         }
       },
       "dialogue": {
-        "text": "Chúng ta cần giải quyết ngay bài toán: Hai kỹ sư Minh và Lan tranh luận khẩn cấp về việc ngắt kết nối máy chủ trước khi bị tấn công..",
+        "text": "Ngày xửa ngày xưa, ở quận Cao Bình có chàng Thạch Sanh mồ côi cha mẹ, sống nghèo khổ dưới gốc đa bằng nghề đốn củi nhưng vô cùng thật thà, dũng cảm.",
         "emotion": "serious_determined",
-        "speaking_rate_multiplier": 0.96,
-        "pitch_offset_semitones": -0.8,
+        "speaking_rate_multiplier": 0.98,
+        "pitch_offset_semitones": -0.5,
         "wav_path": "workspace/audio_wav/SHOT_001.wav",
-        "viseme_json_path": "workspace/visemes/SHOT_001_visemes.json"
+        "viseme_json_path": "workspace/visemes/SHOT_001_visemes.json",
+        "duration_sec": 9.0
       },
       "camera": {
         "lens_mm": 50.0,
@@ -150,9 +148,22 @@
     },
     {
       "shot_id": "SHOT_002",
+      "scene_title": "Cảnh 2: Diệt Chằn Tinh",
       "shot_style": "OTS_CLOSE_UP",
-      "speaker": "CHAR_LAN",
-      "listener": "CHAR_MINH",
+      "speaker": "CHAR_MINH",
+      "listener": "CHAR_LAN",
+      "visual_theme": "temple_night_battle",
+      "sky_color": [
+        0.08,
+        0.05,
+        0.18
+      ],
+      "ground_color": [
+        0.15,
+        0.12,
+        0.15
+      ],
+      "camera_angle": "low_heroic",
       "actors": {
         "CHAR_MINH": {
           "position_xyz": [
@@ -160,7 +171,7 @@
             0.0,
             0.0
           ],
-          "mixamo_animation": "assets/animations/standing_talking_01.fbx",
+          "mixamo_animation": "assets/animations/standing_explaining_02.fbx",
           "rotation_euler_deg": [
             0.0,
             0.0,
@@ -173,7 +184,7 @@
             0.0,
             0.0
           ],
-          "mixamo_animation": "assets/animations/standing_explaining_02.fbx",
+          "mixamo_animation": "assets/animations/standing_talking_01.fbx",
           "rotation_euler_deg": [
             0.0,
             0.0,
@@ -182,34 +193,35 @@
         }
       },
       "dialogue": {
-        "text": "Mọi thông số bối cảnh và dữ liệu 3D đã được khóa đồng bộ một trăm phần trăm.",
-        "emotion": "urgent",
-        "speaking_rate_multiplier": 1.04,
-        "pitch_offset_semitones": 0.6,
+        "text": "Bị Lý Thông lừa đi canh miếu thần thế mạng, Thạch Sanh không hề nao núng, vung búa thần đánh tan xác Chằn Tinh hung ác giải cứu dân lành.",
+        "emotion": "serious_determined",
+        "speaking_rate_multiplier": 0.98,
+        "pitch_offset_semitones": -0.5,
         "wav_path": "workspace/audio_wav/SHOT_002.wav",
-        "viseme_json_path": "workspace/visemes/SHOT_002_visemes.json"
+        "viseme_json_path": "workspace/visemes/SHOT_002_visemes.json",
+        "duration_sec": 7.94
       },
       "camera": {
         "lens_mm": 75.0,
         "aperture_fstop": 2.0,
         "line_of_action_side": "SIDE_A",
         "location_xyz": [
-          -0.65,
+          0.65,
           -0.48,
-          1.502
+          1.593
         ],
         "rotation_euler_deg": [
           90.0,
           0.0,
-          -74.66
+          74.66
         ]
       },
       "rack_focus": {
-        "enabled": true,
+        "enabled": false,
         "from_character": "CHAR_MINH",
-        "to_character": "CHAR_LAN",
-        "start_sec": 0.15,
-        "end_sec": 0.75
+        "to_character": "CHAR_MINH",
+        "start_sec": 0.0,
+        "end_sec": 0.5
       },
       "transition": {
         "cut_type": "J_CUT",
@@ -219,9 +231,22 @@
     },
     {
       "shot_id": "SHOT_003",
-      "shot_style": "CLOSE_UP",
+      "scene_title": "Cảnh 3: Bắn Đại Bàng Cứu Công Chúa",
+      "shot_style": "OTS_CLOSE_UP",
       "speaker": "CHAR_MINH",
       "listener": "CHAR_LAN",
+      "visual_theme": "deep_cave_rescue",
+      "sky_color": [
+        0.25,
+        0.14,
+        0.06
+      ],
+      "ground_color": [
+        0.18,
+        0.1,
+        0.05
+      ],
+      "camera_angle": "dynamic_tracking",
       "actors": {
         "CHAR_MINH": {
           "position_xyz": [
@@ -251,39 +276,123 @@
         }
       },
       "dialogue": {
-        "text": "Bắt đầu tiến trình kết xuất điện ảnh ngay lập tức, không để xảy ra bất kỳ sai số nào.",
-        "emotion": "calm",
-        "speaking_rate_multiplier": 0.95,
-        "pitch_offset_semitones": -1.0,
+        "text": "Khi công chúa Quỳnh Nga bị đại bàng khổng lồ bắt cóc, Thạch Sanh dùng cung vàng bắn trúng cánh đại bàng, lần theo vết máu xuống tận hang sâu cứu nàng.",
+        "emotion": "serious_determined",
+        "speaking_rate_multiplier": 0.98,
+        "pitch_offset_semitones": -0.5,
         "wav_path": "workspace/audio_wav/SHOT_003.wav",
-        "viseme_json_path": "workspace/visemes/SHOT_003_visemes.json"
+        "viseme_json_path": "workspace/visemes/SHOT_003_visemes.json",
+        "duration_sec": 8.33
       },
       "camera": {
-        "lens_mm": 85.0,
+        "lens_mm": 75.0,
         "aperture_fstop": 2.0,
         "line_of_action_side": "SIDE_A",
         "location_xyz": [
-          0.15,
-          -0.52,
+          0.65,
+          -0.48,
           1.593
         ],
         "rotation_euler_deg": [
           90.0,
           0.0,
-          67.41
+          74.66
         ]
       },
       "rack_focus": {
-        "enabled": true,
-        "from_character": "CHAR_LAN",
+        "enabled": false,
+        "from_character": "CHAR_MINH",
         "to_character": "CHAR_MINH",
-        "start_sec": 0.15,
-        "end_sec": 0.75
+        "start_sec": 0.0,
+        "end_sec": 0.5
       },
       "transition": {
         "cut_type": "J_CUT",
         "audio_overlap_sec": 0.3,
         "raw_render_path": "workspace/raw_renders/SHOT_003_raw.mp4"
+      }
+    },
+    {
+      "shot_id": "SHOT_004",
+      "scene_title": "Cảnh 4: Tiếng Đàn Thần & Niêu Cơm",
+      "shot_style": "OTS_CLOSE_UP",
+      "speaker": "CHAR_MINH",
+      "listener": "CHAR_LAN",
+      "visual_theme": "royal_palace_victory",
+      "sky_color": [
+        0.45,
+        0.32,
+        0.08
+      ],
+      "ground_color": [
+        0.35,
+        0.12,
+        0.1
+      ],
+      "camera_angle": "medium_celebration",
+      "actors": {
+        "CHAR_MINH": {
+          "position_xyz": [
+            -1.1,
+            0.0,
+            0.0
+          ],
+          "mixamo_animation": "assets/animations/standing_explaining_02.fbx",
+          "rotation_euler_deg": [
+            0.0,
+            0.0,
+            -90.0
+          ]
+        },
+        "CHAR_LAN": {
+          "position_xyz": [
+            1.1,
+            0.0,
+            0.0
+          ],
+          "mixamo_animation": "assets/animations/standing_talking_01.fbx",
+          "rotation_euler_deg": [
+            0.0,
+            0.0,
+            90.0
+          ]
+        }
+      },
+      "dialogue": {
+        "text": "Nhờ tiếng đàn thần giải oan và niêu cơm thần ăn mãi không vơi, Thạch Sanh vạch trần tội ác của mẹ con Lý Thông, kết duyên cùng công chúa và lên ngôi vua.",
+        "emotion": "serious_determined",
+        "speaking_rate_multiplier": 0.98,
+        "pitch_offset_semitones": -0.5,
+        "wav_path": "workspace/audio_wav/SHOT_004.wav",
+        "viseme_json_path": "workspace/visemes/SHOT_004_visemes.json",
+        "duration_sec": 8.81
+      },
+      "camera": {
+        "lens_mm": 75.0,
+        "aperture_fstop": 2.0,
+        "line_of_action_side": "SIDE_A",
+        "location_xyz": [
+          0.65,
+          -0.48,
+          1.593
+        ],
+        "rotation_euler_deg": [
+          90.0,
+          0.0,
+          74.66
+        ]
+      },
+      "rack_focus": {
+        "enabled": false,
+        "from_character": "CHAR_MINH",
+        "to_character": "CHAR_MINH",
+        "start_sec": 0.0,
+        "end_sec": 0.5
+      },
+      "transition": {
+        "cut_type": "J_CUT",
+        "audio_overlap_sec": 0.3,
+        "raw_render_path": "workspace/raw_renders/SHOT_004_raw.mp4"
       }
     }
   ]
