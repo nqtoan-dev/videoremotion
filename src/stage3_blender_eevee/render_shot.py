@@ -11,21 +11,90 @@ except ImportError:
     Vector = None
     Euler = None
 
+
 def get_cli_arguments() -> dict:
-    argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
+    argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
     parsed = {}
     for i in range(0, len(argv), 2):
         if i + 1 < len(argv):
             parsed[argv[i].lstrip("-")] = argv[i + 1]
     return parsed
 
+
+def is_valid_binary_fbx(fbx_path: Path) -> bool:
+    if not fbx_path.exists() or fbx_path.stat().st_size < 64:
+        return False
+    head = fbx_path.read_bytes()[:24]
+    return b"CINE_CODE_PLACEHOLDER" not in head
+
+
+def build_procedural_studio_and_character_if_needed(char_id: str, char_cfg: dict, actor_state: dict):
+    """
+    Khi file .blend hoặc .fbx trên đĩa chỉ là placeholder (CINE_CODE_PLACEHOLDER),
+    tự động khởi tạo bối cảnh Studio 3D và nhân vật 3D có sẵn Xương hàm + Shape Keys (A,O,E,M,F) bằng bpy.
+    """
+    if bpy is None:
+        return None
+
+    # 1. Tạo sàn và tường Studio nếu cảnh đang trống
+    if "Studio_Floor" not in bpy.data.objects:
+        bpy.ops.mesh.primitive_plane_add(size=14.0, location=(0.0, 0.0, 0.0))
+        floor = bpy.context.active_object
+        floor.name = "Studio_Floor"
+        mat_floor = bpy.data.materials.new("Mat_Studio_Floor")
+        mat_floor.use_nodes = True
+        bsdf = mat_floor.node_tree.nodes.get("Principled BSDF")
+        if bsdf:
+            bsdf.inputs["Base Color"].default_value = (0.05, 0.06, 0.08, 1.0)
+            bsdf.inputs["Roughness"].default_value = 0.25
+        floor.data.materials.append(mat_floor)
+
+    if "Prop_Chair_Master" not in bpy.data.objects:
+        bpy.ops.mesh.primitive_cube_add(size=0.65, location=(0.0, 3.0, 0.35))
+        chair = bpy.context.active_object
+        chair.name = "Prop_Chair_Master"
+
+    # 2. Tạo nhân vật 3D có Shape Keys khẩu hình nếu chưa có trong cảnh
+    arm_name = char_cfg.get("armature_name", char_id)
+    face_mesh_name = char_cfg.get("face_mesh_name", f"Mesh_Head_{char_id}")
+    if face_mesh_name in bpy.data.objects:
+        return bpy.data.objects.get(arm_name) or bpy.data.objects.get(face_mesh_name)
+
+    pos = Vector(actor_state["position_xyz"])
+    height_m = float(char_cfg.get("height_m", 1.72))
+
+    # Tạo thân nhân vật
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.24, depth=height_m * 0.72, location=(pos.x, pos.y, height_m * 0.36))
+    body_obj = bpy.context.active_object
+    body_obj.name = f"Body_{char_id}"
+
+    # Tạo đầu nhân vật kèm Shape Keys khẩu hình (shape_A, shape_O, shape_E, shape_M, shape_F)
+    head_z = height_m * 0.88
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=0.19, location=(pos.x, pos.y, head_z))
+    head_obj = bpy.context.active_object
+    head_obj.name = face_mesh_name
+
+    mat_skin = bpy.data.materials.new(f"Mat_{char_id}")
+    mat_skin.use_nodes = True
+    bsdf = mat_skin.node_tree.nodes.get("Principled BSDF")
+    if bsdf:
+        color = (0.22, 0.52, 0.85, 1.0) if "MINH" in char_id else (0.85, 0.38, 0.32, 1.0)
+        bsdf.inputs["Base Color"].default_value = color
+        bsdf.inputs["Roughness"].default_value = 0.35
+    head_obj.data.materials.append(mat_skin)
+    body_obj.data.materials.append(mat_skin)
+
+    # Thêm Shape Keys cho miệng
+    head_obj.shape_key_add(name="Basis")
+    for s_name in ["shape_A", "shape_O", "shape_E", "shape_M", "shape_F"]:
+        head_obj.shape_key_add(name=s_name)
+
+    body_obj.parent = head_obj
+    body_obj.location = Vector((0.0, 0.0, -height_m * 0.52))
+    return head_obj
+
+
 def enforce_4gb_vram_discipline(scene_cfg: dict, max_tex_res: int = 2048):
-    """
-    THÔNG SỐ 5 - Kỷ luật bộ nhớ 4GB VRAM trên Quadro P2000:
-    1. Dọn sạch dữ liệu mồ côi (Orphan meshes/materials/textures).
-    2. Hạ độ phân giải mọi Texture vượt quá 2K (2048x2048) ngay trong RAM trước khi đẩy lên VRAM.
-    3. Tạo các vật thể lặp lại (cây cối, bàn ghế) bằng kỹ thuật Instancing (link=True).
-    """
     if bpy is None:
         return
 
@@ -43,7 +112,6 @@ def enforce_4gb_vram_discipline(scene_cfg: dict, max_tex_res: int = 2048):
     if hasattr(bpy.context.preferences.system, "gl_texture_limit"):
         bpy.context.preferences.system.gl_texture_limit = 'CLAMP_2048'
 
-    # Thực thi Instancing (link=True) cho các đồ vật lặp lại trong bối cảnh
     for prop_group in scene_cfg.get("instanced_props", []):
         src_name = prop_group.get("source_object_name")
         src_obj = bpy.data.objects.get(src_name)
@@ -53,16 +121,13 @@ def enforce_4gb_vram_discipline(scene_cfg: dict, max_tex_res: int = 2048):
             inst_name = f"{src_name}_Instance_{idx:02d}"
             if inst_name not in bpy.data.objects:
                 inst_obj = src_obj.copy()
-                inst_obj.data = src_obj.data  # link=True: chia sẻ 100% Mesh & UV trong VRAM
+                inst_obj.data = src_obj.data  # link=True
                 inst_obj.name = inst_name
                 bpy.context.collection.objects.link(inst_obj)
             bpy.data.objects[inst_name].location = Vector(loc)
 
+
 def setup_eevee_cinematic_pipeline(scene, meta: dict, scene_cfg: dict):
-    """
-    Thiết lập THÔNG SỐ 2 (Volumetrics & Soft Shadows), THÔNG SỐ 3 (SSR & GTAO),
-    và THÔNG SỐ 4 (Quản lý màu sắc chuẩn rạp AgX - High Contrast).
-    """
     if bpy is None:
         return
 
@@ -70,7 +135,6 @@ def setup_eevee_cinematic_pipeline(scene, meta: dict, scene_cfg: dict):
     scene.render.engine = 'BLENDER_EEVEE_NEXT' if 'BLENDER_EEVEE_NEXT' in engines else 'BLENDER_EEVEE'
     eevee = scene.eevee
 
-    # THÔNG SỐ 2: Ánh sáng thể tích (Volumetrics) & Bóng đổ mềm (Soft Shadows)
     if hasattr(eevee, "use_volumetric_lighting"):
         eevee.use_volumetric_lighting = bool(scene_cfg.get("volumetric_lighting", True))
         eevee.use_volumetric_shadows = True
@@ -80,18 +144,6 @@ def setup_eevee_cinematic_pipeline(scene, meta: dict, scene_cfg: dict):
         eevee.shadow_cube_size = '1024'
         eevee.shadow_cascade_size = '2048'
 
-    # Tạo sương/bụi thể tích nhẹ trong World Shader nếu chưa có
-    if scene.world and scene.world.use_nodes:
-        tree = scene.world.node_tree
-        if "Volume Scatter" not in [n.bl_idname for n in tree.nodes]:
-            vol_node = tree.nodes.new(type="ShaderNodeVolumeScatter")
-            vol_node.inputs["Density"].default_value = float(scene_cfg.get("volumetric_density", 0.025))
-            vol_node.inputs["Anisotropy"].default_value = 0.6
-            out_node = next((n for n in tree.nodes if n.bl_idname == "ShaderNodeOutputWorld"), None)
-            if out_node:
-                tree.links.new(vol_node.outputs["Volume"], out_node.inputs["Volume"])
-
-    # THÔNG SỐ 3: Phản chiếu không gian màn hình (SSR) & Chiều sâu góc khuất (GTAO)
     if hasattr(eevee, "use_ssr"):
         eevee.use_ssr = True
         eevee.use_ssr_refraction = True
@@ -100,9 +152,9 @@ def setup_eevee_cinematic_pipeline(scene, meta: dict, scene_cfg: dict):
         eevee.use_gtao = True
         eevee.gtao_distance = 0.45
 
-    eevee.taa_render_samples = 32
+    if hasattr(eevee, "taa_render_samples"):
+        eevee.taa_render_samples = 16
 
-    # THÔNG SỐ 4: Quản lý màu sắc chuẩn rạp AgX - High Contrast
     cm = scene.view_settings
     target_transform = meta["color_management"].get("view_transform", "AgX")
     target_look = meta["color_management"].get("look", "AgX - High Contrast")
@@ -113,13 +165,8 @@ def setup_eevee_cinematic_pipeline(scene, meta: dict, scene_cfg: dict):
         cm.view_transform = "Filmic"
         cm.look = "High Contrast"
 
+
 def setup_three_point_lighting(speaker_pos, camera_pos):
-    """
-    THÔNG SỐ 2 (Tiếp): Thiết lập hệ thống đèn 3-Point Lighting chuẩn điện ảnh:
-    - Key Light (Ấm 3200K): Tạo khối sáng chính trên gương mặt.
-    - Fill Light (Dịu 5600K): Cân bằng vùng tối bên má khuất sáng.
-    - Rim Light (Đèn tách tóc): Đánh ngược từ phía sau lưng để tách viền nhân vật khỏi phông nền.
-    """
     if bpy is None:
         return
 
@@ -149,8 +196,8 @@ def setup_three_point_lighting(speaker_pos, camera_pos):
         l_obj.location = loc
         l_obj.rotation_euler = (head_target - loc).to_track_quat('-Z', 'Y').to_euler()
 
+
 def get_eye_bone_world_location(char_id: str, char_cfg: dict, actor_state: dict):
-    """Lấy tọa độ thế giới chính xác của xương mắt (`eye_bone_name`) trên nhân vật."""
     if bpy is None:
         return None
 
@@ -166,11 +213,8 @@ def get_eye_bone_world_location(char_id: str, char_cfg: dict, actor_state: dict)
     height_m = float(char_cfg.get("height_m", 1.72))
     return base_pos + Vector((0.0, 0.0, height_m * 0.91))
 
+
 def setup_camera_dof_and_rack_focus(scene, shot: dict, characters_cfg: dict, fps: int):
-    """
-    THÔNG SỐ 1: Ống kính 50mm-85mm, Xóa phông vật lý (f/2.0) khóa vào xương mắt nhân vật
-    và tự động trượt điểm lấy nét (Rack Focus) khi chuyển lượt nói.
-    """
     if bpy is None:
         return
 
@@ -215,39 +259,41 @@ def setup_camera_dof_and_rack_focus(scene, shot: dict, characters_cfg: dict, fps
     else:
         focus_target.location = spk_eye_loc
 
+
 def apply_mixamo_and_lipsync_keyframes(
     char_id: str,
     char_cfg: dict,
     actor_state: dict,
     viseme_json_path: Path,
-    is_speaker: bool
+    is_speaker: bool,
 ):
-    """
-    Đặt nhân vật vào đúng tọa độ, nạp chuyển động Mixamo (.fbx) và đóng Keyframe
-    khẩu hình (A, O, E, M, F) điều khiển trực tiếp môi (Shape Keys) và xương hàm (Jaw Bone).
-    """
     if bpy is None:
         return
 
     arm_name = char_cfg.get("armature_name", char_id)
     char_obj = bpy.data.objects.get(arm_name) or bpy.data.objects.get(char_id)
 
-    # Nếu nhân vật chưa có sẵn trong file .blend thì nạp từ file .fbx
     if not char_obj:
         fbx_file = Path(char_cfg.get("fbx_path", ""))
-        if fbx_file.exists():
+        if is_valid_binary_fbx(fbx_file):
             bpy.ops.import_scene.fbx(filepath=str(fbx_file))
             char_obj = bpy.context.selected_objects[0] if bpy.context.selected_objects else None
+        else:
+            char_obj = build_procedural_studio_and_character_if_needed(char_id, char_cfg, actor_state)
 
     if not char_obj:
         return
 
-    char_obj.location = Vector(actor_state["position_xyz"])
+    height_m = float(char_cfg.get("height_m", 1.72))
+    pos = Vector(actor_state["position_xyz"])
+    if char_obj.type == 'MESH':
+        char_obj.location = Vector((pos.x, pos.y, height_m * 0.88))
+    else:
+        char_obj.location = pos
     char_obj.rotation_euler = Euler([math.radians(x) for x in actor_state["rotation_euler_deg"]], 'XYZ')
 
-    # Nạp chuyển động cơ thể từ thư viện Mixamo nếu file tồn tại
     mixamo_path = Path(actor_state.get("mixamo_animation", ""))
-    if mixamo_path.exists() and char_obj.type == 'ARMATURE':
+    if is_valid_binary_fbx(mixamo_path) and char_obj.type == 'ARMATURE':
         bpy.ops.import_scene.fbx(filepath=str(mixamo_path))
         imported_arms = [o for o in bpy.context.selected_objects if o.type == 'ARMATURE' and o != char_obj]
         if imported_arms and imported_arms[0].animation_data and imported_arms[0].animation_data.action:
@@ -261,7 +307,7 @@ def apply_mixamo_and_lipsync_keyframes(
         return
 
     viseme_data = json.loads(viseme_json_path.read_text(encoding="utf-8"))
-    face_mesh = bpy.data.objects.get(char_cfg.get("face_mesh_name", ""))
+    face_mesh = bpy.data.objects.get(char_cfg.get("face_mesh_name", "")) or char_obj
     jaw_bone_name = char_cfg.get("jaw_bone_name", "Bone_Jaw")
 
     for cue in viseme_data.get("keyframes", []):
@@ -270,7 +316,6 @@ def apply_mixamo_and_lipsync_keyframes(
         jaw_val = float(cue["jaw_open"])
         weights = cue["weights"]
 
-        # Điều khiển Shape Keys môi (shape_A, shape_O, shape_E, shape_M, shape_F)
         if face_mesh and face_mesh.type == 'MESH' and face_mesh.data.shape_keys:
             kb = face_mesh.data.shape_keys.key_blocks
             for shape_name, w_val in weights.items():
@@ -278,13 +323,13 @@ def apply_mixamo_and_lipsync_keyframes(
                     kb[shape_name].value = float(w_val)
                     kb[shape_name].keyframe_insert(data_path="value", frame=f_peak)
 
-        # Điều khiển Xương hàm (Jaw Bone) mở theo độ rộng nguyên âm
         if char_obj.type == 'ARMATURE' and jaw_bone_name in char_obj.pose.bones:
             jaw_bone = char_obj.pose.bones[jaw_bone_name]
             jaw_bone.rotation_mode = 'XYZ'
             jaw_bone.rotation_euler[0] = math.radians(jaw_val * 22.0)
             jaw_bone.keyframe_insert(data_path="rotation_euler", index=0, frame=f_start)
             jaw_bone.keyframe_insert(data_path="rotation_euler", index=0, frame=f_peak)
+
 
 def main():
     args = get_cli_arguments()
@@ -308,7 +353,6 @@ def main():
     if viseme_path.exists():
         v_info = json.loads(viseme_path.read_text(encoding="utf-8"))
         scene.frame_start = 1
-        # Render dư thêm 0.35 giây ở cuối cảnh để Tầng 4 thực hiện kỹ thuật cắt J-Cut / L-Cut mượt mà
         scene.frame_end = int(v_info["total_frames"]) + int(round(fps * 0.35))
     else:
         scene.frame_start = 1
@@ -320,7 +364,7 @@ def main():
             char_cfg=characters_cfg.get(char_id, {}),
             actor_state=actor_state,
             viseme_json_path=viseme_path,
-            is_speaker=(char_id == shot["speaker"])
+            is_speaker=(char_id == shot["speaker"]),
         )
 
     setup_camera_dof_and_rack_focus(scene, shot, characters_cfg, fps)
@@ -341,6 +385,7 @@ def main():
     scene.render.ffmpeg.constant_rate_factor = 'HIGH'
 
     bpy.ops.render.render(animation=True)
+
 
 if __name__ == "__main__":
     main()

@@ -1,44 +1,53 @@
+import os
 import json
 import subprocess
 from pathlib import Path
 from typing import List, Dict
 
+
 def is_nvenc_available() -> bool:
-    """Kiểm tra chip phần cứng NVENC trên Quadro P2000 có sẵn sàng trong FFmpeg hay không."""
+    """Kiểm tra thực tế khả năng khởi tạo bộ mã hóa phần cứng h264_nvenc trên Quadro P2000."""
     try:
         res = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-encoders"],
-            capture_output=True, text=True, check=True
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.1",
+                "-c:v", "h264_nvenc", "-f", "null", "-"
+            ],
+            capture_output=True, text=True, timeout=10
         )
-        return "h264_nvenc" in res.stdout
+        return res.returncode == 0
     except Exception:
         return False
+
+
+def _sanitize_lut_path_for_ffmpeg(lut_path: Path) -> str:
+    """Chuẩn hóa đường dẫn file .cube cho bộ lọc lut3d của FFmpeg (tránh lỗi dấu ':' ổ đĩa trên Windows)."""
+    try:
+        rel = os.path.relpath(lut_path.resolve(), Path.cwd().resolve())
+        return Path(rel).as_posix()
+    except Exception:
+        return lut_path.as_posix().replace(":", "\\:")
+
 
 def build_ffmpeg_master_command(
     muxed_clips: List[Path],
     clip_durations: List[float],
     storyboard: Dict,
     output_movie_path: Path,
-    use_nvenc: bool = True
+    use_nvenc: bool = True,
 ) -> List[str]:
-    """
-    Xây dựng lệnh FFmpeg thực hiện đồng thời:
-    1. Cắt nối J-Cut / L-Cut (âm thanh cảnh tiếp theo tràn sớm 0.3 giây).
-    2. Trộn Room Tone xuyên suốt + Audio Ducking.
-    3. Phủ màu 3D LUT (.cube) + Hạt phim 35mm + Đóng khung CinemaScope 2.35:1.
-    4. Mã hóa phần cứng bằng cờ `-c:v h264_nvenc -preset p6 -cq 18`.
-    """
     meta = storyboard["project_meta"]
     scene_cfg = storyboard["scene"]
     fps = int(meta.get("fps", 24))
-    overlap = 0.30  # 0.3 giây chồng lấn cho kỹ thuật J-Cut / L-Cut
+    overlap = 0.30
 
     inputs: List[str] = []
     for clip in muxed_clips:
         inputs.extend(["-i", str(clip.as_posix())])
 
     room_tone_path = Path(scene_cfg.get("room_tone_file", ""))
-    has_room_tone = room_tone_path.exists()
+    has_room_tone = room_tone_path.exists() and room_tone_path.stat().st_size > 10
     room_tone_idx = len(muxed_clips)
     if has_room_tone:
         inputs.extend(["-stream_loop", "-1", "-i", str(room_tone_path.as_posix())])
@@ -58,7 +67,6 @@ def build_ffmpeg_master_command(
             v_out = f"[v_jcut_{i}]"
             a_out = f"[a_jcut_{i}]"
 
-            # J-Cut: Âm thanh cảnh i bắt đầu sớm hơn 0.3s qua acrossfade, hình ảnh cắt dứt khoát ở cuối nhịp chồng
             filters.append(f"{v_prev}[{i}:v]xfade=transition=fade:duration=0.04:offset={cut_offset}{v_out}")
             filters.append(f"{a_prev}[{i}:a]acrossfade=d={overlap}:c1=tri:c2=tri{a_out}")
 
@@ -69,7 +77,6 @@ def build_ffmpeg_master_command(
         filters.append(f"{v_prev}null[v_joined]")
         filters.append(f"{a_prev}anull[a_joined]")
 
-    # Trộn Room Tone chạy xuyên suốt bên dưới lời thoại
     if has_room_tone:
         rt_vol = float(scene_cfg.get("room_tone_base_volume", 0.16))
         filters.append(
@@ -79,25 +86,25 @@ def build_ffmpeg_master_command(
     else:
         filters.append("[a_joined]anull[a_master]")
 
-    # Chuỗi hậu kỳ hình ảnh: 3D LUT (.cube) + Hạt phim 35mm + Khung CinemaScope 2.35:1 (1920x816 trên nền 1920x1080)
     lut_path = Path(meta["color_management"].get("lut_path", ""))
     grain_val = float(meta["color_management"].get("film_grain_intensity", 6.5))
 
     v_fx = ["format=rgb24"]
     if lut_path.exists():
-        v_fx.append(f"lut3d=file='{lut_path.as_posix()}':interp=tetrahedral")
+        safe_lut = _sanitize_lut_path_for_ffmpeg(lut_path)
+        v_fx.append(f"lut3d=file='{safe_lut}':interp=tetrahedral")
     v_fx.extend([
         "format=yuv420p",
         f"noise=alls={grain_val}:allf=t+u",
         "drawbox=x=0:y=0:w=iw:h=132:color=black:t=fill",
-        "drawbox=x=0:y=ih-132:w=iw:h=132:color=black:t=fill"
+        "drawbox=x=0:y=ih-132:w=iw:h=132:color=black:t=fill",
     ])
     filters.append(f"[v_joined]{','.join(v_fx)}[v_master]")
 
     video_encoder_flags = (
         ["-c:v", "h264_nvenc", "-preset", "p6", "-cq", "18"]
-        if use_nvenc else
-        ["-c:v", "libx264", "-preset", "fast", "-crf", "18"]
+        if use_nvenc
+        else ["-c:v", "libx264", "-preset", "fast", "-crf", "18"]
     )
 
     return [
@@ -110,8 +117,9 @@ def build_ffmpeg_master_command(
         *video_encoder_flags,
         "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "256k",
-        str(output_movie_path.as_posix())
+        str(output_movie_path.as_posix()),
     ]
+
 
 def assemble_final_cinematic_movie(storyboard_path: Path, output_movie_path: Path) -> Path:
     storyboard = json.loads(storyboard_path.read_text(encoding="utf-8"))
@@ -135,7 +143,11 @@ def assemble_final_cinematic_movie(storyboard_path: Path, output_movie_path: Pat
         total_clip_dur = round(speech_dur + overlap, 3)
 
         mux_out = temp_mux_dir / f"{shot_id}_muxed.mp4"
-        enc_flags = ["-c:v", "h264_nvenc", "-preset", "p6", "-cq", "16"] if use_nvenc else ["-c:v", "libx264", "-crf", "16"]
+        enc_flags = (
+            ["-c:v", "h264_nvenc", "-preset", "p6", "-cq", "16"]
+            if use_nvenc
+            else ["-c:v", "libx264", "-preset", "fast", "-crf", "16"]
+        )
         cmd_mux = [
             "ffmpeg", "-y",
             "-i", str(raw_vid.as_posix()),
@@ -145,9 +157,27 @@ def assemble_final_cinematic_movie(storyboard_path: Path, output_movie_path: Pat
             "-t", str(total_clip_dur),
             *enc_flags,
             "-c:a", "aac", "-b:a", "192k",
-            str(mux_out.as_posix())
+            str(mux_out.as_posix()),
         ]
-        subprocess.run(cmd_mux, check=True)
+        try:
+            subprocess.run(cmd_mux, check=True)
+        except subprocess.CalledProcessError:
+            if use_nvenc:
+                cmd_mux_fallback = [
+                    "ffmpeg", "-y",
+                    "-i", str(raw_vid.as_posix()),
+                    "-i", str(wav_aud.as_posix()),
+                    "-filter_complex", f"[1:a]apad=pad_dur={overlap}[a_padded]",
+                    "-map", "0:v:0", "-map", "[a_padded]",
+                    "-t", str(total_clip_dur),
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "16",
+                    "-c:a", "aac", "-b:a", "192k",
+                    str(mux_out.as_posix()),
+                ]
+                subprocess.run(cmd_mux_fallback, check=True)
+            else:
+                raise
+
         muxed_clips.append(mux_out)
         clip_durations.append(total_clip_dur)
 
@@ -157,7 +187,20 @@ def assemble_final_cinematic_movie(storyboard_path: Path, output_movie_path: Pat
         clip_durations=clip_durations,
         storyboard=storyboard,
         output_movie_path=output_movie_path,
-        use_nvenc=use_nvenc
+        use_nvenc=use_nvenc,
     )
-    subprocess.run(cmd_master, check=True)
+    try:
+        subprocess.run(cmd_master, check=True)
+    except subprocess.CalledProcessError:
+        if use_nvenc:
+            cmd_fallback = build_ffmpeg_master_command(
+                muxed_clips=muxed_clips,
+                clip_durations=clip_durations,
+                storyboard=storyboard,
+                output_movie_path=output_movie_path,
+                use_nvenc=False,
+            )
+            subprocess.run(cmd_fallback, check=True)
+        else:
+            raise
     return output_movie_path
