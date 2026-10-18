@@ -1,6 +1,6 @@
 {
   "project_meta": {
-    "title": "Phim Điện Ảnh: tạo video truyện cổ tích thạch",
+    "title": "Hai Kỹ Sư Minh Và Lan Tranh Luận Khẩn Cấp Về Việc Ngắt Kết N",
     "fps": 24,
     "resolution": [
       1920,
@@ -22,11 +22,33 @@
     "room_tone_file": "assets/audio/room_tone_ambience.wav",
     "room_tone_base_volume": 0.16,
     "volumetric_lighting": true,
-    "volumetric_density": 0.03
+    "volumetric_density": 0.03,
+    "instanced_props": [
+      {
+        "source_object_name": "Prop_Chair_Master",
+        "instance_locations": [
+          [
+            -2.2,
+            1.4,
+            0.0
+          ],
+          [
+            -2.2,
+            -1.4,
+            0.0
+          ],
+          [
+            2.2,
+            1.4,
+            0.0
+          ]
+        ]
+      }
+    ]
   },
   "characters": {
     "CHAR_MINH": {
-      "display_name": "Minh",
+      "display_name": "Minh (Đạo diễn Kỹ thuật)",
       "fbx_path": "assets/characters/char_minh.fbx",
       "armature_name": "Armature_Minh",
       "face_mesh_name": "Mesh_Head_Minh",
@@ -41,7 +63,7 @@
       }
     },
     "CHAR_LAN": {
-      "display_name": "Lan",
+      "display_name": "Lan (Chuyên gia Hệ thống)",
       "fbx_path": "assets/characters/char_lan.fbx",
       "armature_name": "Armature_Lan",
       "face_mesh_name": "Mesh_Head_Lan",
@@ -52,14 +74,152 @@
         "engine": "kokoro_cpu_int8",
         "voice_preset": "vn_female_clear",
         "base_speed": 1.02,
-        "base_pitch_semitones": 0.8
+        "base_pitch_semitones": 1.0
       }
     }
   },
   "shots": [
     {
       "shot_id": "SHOT_001",
+      "shot_style": "ESTABLISHING_WIDE",
+      "speaker": "CHAR_MINH",
+      "listener": "CHAR_LAN",
+      "actors": {
+        "CHAR_MINH": {
+          "position_xyz": [
+            -1.1,
+            0.0,
+            0.0
+          ],
+          "mixamo_animation": "assets/animations/standing_listening_idle.fbx",
+          "rotation_euler_deg": [
+            0.0,
+            0.0,
+            -90.0
+          ]
+        },
+        "CHAR_LAN": {
+          "position_xyz": [
+            1.1,
+            0.0,
+            0.0
+          ],
+          "mixamo_animation": "assets/animations/standing_talking_01.fbx",
+          "rotation_euler_deg": [
+            0.0,
+            0.0,
+            90.0
+          ]
+        }
+      },
+      "dialogue": {
+        "text": "Chúng ta cần giải quyết ngay bài toán: Hai kỹ sư Minh và Lan tranh luận khẩn cấp về việc ngắt kết nối máy chủ trước khi bị tấn công..",
+        "emotion": "serious_determined",
+        "speaking_rate_multiplier": 0.96,
+        "pitch_offset_semitones": -0.8,
+        "wav_path": "workspace/audio_wav/SHOT_001.wav",
+        "viseme_json_path": "workspace/visemes/SHOT_001_visemes.json"
+      },
+      "camera": {
+        "lens_mm": 50.0,
+        "aperture_fstop": 2.8,
+        "line_of_action_side": "SIDE_A",
+        "location_xyz": [
+          0.0,
+          -2.8,
+          1.712
+        ],
+        "rotation_euler_deg": [
+          85.91,
+          0.0,
+          0.0
+        ]
+      },
+      "rack_focus": {
+        "enabled": false,
+        "from_character": "CHAR_MINH",
+        "to_character": "CHAR_MINH",
+        "start_sec": 0.0,
+        "end_sec": 0.5
+      },
+      "transition": {
+        "cut_type": "J_CUT",
+        "audio_overlap_sec": 0.3,
+        "raw_render_path": "workspace/raw_renders/SHOT_001_raw.mp4"
+      }
+    },
+    {
+      "shot_id": "SHOT_002",
       "shot_style": "OTS_CLOSE_UP",
+      "speaker": "CHAR_LAN",
+      "listener": "CHAR_MINH",
+      "actors": {
+        "CHAR_MINH": {
+          "position_xyz": [
+            -1.1,
+            0.0,
+            0.0
+          ],
+          "mixamo_animation": "assets/animations/standing_talking_01.fbx",
+          "rotation_euler_deg": [
+            0.0,
+            0.0,
+            -90.0
+          ]
+        },
+        "CHAR_LAN": {
+          "position_xyz": [
+            1.1,
+            0.0,
+            0.0
+          ],
+          "mixamo_animation": "assets/animations/standing_explaining_02.fbx",
+          "rotation_euler_deg": [
+            0.0,
+            0.0,
+            90.0
+          ]
+        }
+      },
+      "dialogue": {
+        "text": "Mọi thông số bối cảnh và dữ liệu 3D đã được khóa đồng bộ một trăm phần trăm.",
+        "emotion": "urgent",
+        "speaking_rate_multiplier": 1.04,
+        "pitch_offset_semitones": 0.6,
+        "wav_path": "workspace/audio_wav/SHOT_002.wav",
+        "viseme_json_path": "workspace/visemes/SHOT_002_visemes.json"
+      },
+      "camera": {
+        "lens_mm": 75.0,
+        "aperture_fstop": 2.0,
+        "line_of_action_side": "SIDE_A",
+        "location_xyz": [
+          -0.65,
+          -0.48,
+          1.502
+        ],
+        "rotation_euler_deg": [
+          90.0,
+          0.0,
+          -74.66
+        ]
+      },
+      "rack_focus": {
+        "enabled": true,
+        "from_character": "CHAR_MINH",
+        "to_character": "CHAR_LAN",
+        "start_sec": 0.15,
+        "end_sec": 0.75
+      },
+      "transition": {
+        "cut_type": "J_CUT",
+        "audio_overlap_sec": 0.3,
+        "raw_render_path": "workspace/raw_renders/SHOT_002_raw.mp4"
+      }
+    },
+    {
+      "shot_id": "SHOT_003",
+      "shot_style": "CLOSE_UP",
       "speaker": "CHAR_MINH",
       "listener": "CHAR_LAN",
       "actors": {
@@ -91,101 +251,39 @@
         }
       },
       "dialogue": {
-        "text": "tạo video truyện cổ tích thạch sanh",
-        "emotion": "serious_determined",
+        "text": "Bắt đầu tiến trình kết xuất điện ảnh ngay lập tức, không để xảy ra bất kỳ sai số nào.",
+        "emotion": "calm",
         "speaking_rate_multiplier": 0.95,
-        "pitch_offset_semitones": -0.5,
-        "wav_path": "workspace/audio_wav/SHOT_001.wav",
-        "viseme_json_path": "workspace/visemes/SHOT_001_visemes.json"
-      },
-      "camera": {
-        "lens_mm": 75.0,
-        "aperture_fstop": 2.0,
-        "line_of_action_side": "SIDE_A",
-        "location_xyz": [
-          0.65,
-          -0.48,
-          1.593
-        ],
-        "rotation_euler_deg": [
-          90.0,
-          0.0,
-          74.66
-        ]
-      },
-      "transition": {
-        "cut_type": "J_CUT",
-        "audio_overlap_sec": 0.3,
-        "raw_render_path": "workspace/raw_renders/SHOT_001_raw.mp4"
-      }
-    },
-    {
-      "shot_id": "SHOT_002",
-      "shot_style": "CLOSE_UP",
-      "speaker": "CHAR_LAN",
-      "listener": "CHAR_MINH",
-      "actors": {
-        "CHAR_MINH": {
-          "position_xyz": [
-            -1.1,
-            0.0,
-            0.0
-          ],
-          "mixamo_animation": "assets/animations/standing_talking_01.fbx",
-          "rotation_euler_deg": [
-            0.0,
-            0.0,
-            -90.0
-          ]
-        },
-        "CHAR_LAN": {
-          "position_xyz": [
-            1.1,
-            0.0,
-            0.0
-          ],
-          "mixamo_animation": "assets/animations/standing_listening_idle.fbx",
-          "rotation_euler_deg": [
-            0.0,
-            0.0,
-            90.0
-          ]
-        }
-      },
-      "dialogue": {
-        "text": "Tôi hiểu tình hình rồi. Chúng ta hãy thực thi phương án dự phòng ngay lập tức.",
-        "emotion": "urgent",
-        "speaking_rate_multiplier": 1.05,
-        "pitch_offset_semitones": 0.6,
-        "wav_path": "workspace/audio_wav/SHOT_002.wav",
-        "viseme_json_path": "workspace/visemes/SHOT_002_visemes.json"
+        "pitch_offset_semitones": -1.0,
+        "wav_path": "workspace/audio_wav/SHOT_003.wav",
+        "viseme_json_path": "workspace/visemes/SHOT_003_visemes.json"
       },
       "camera": {
         "lens_mm": 85.0,
         "aperture_fstop": 2.0,
         "line_of_action_side": "SIDE_A",
         "location_xyz": [
-          -0.15,
+          0.15,
           -0.52,
-          1.502
+          1.593
         ],
         "rotation_euler_deg": [
           90.0,
           0.0,
-          -67.41
+          67.41
         ]
       },
       "rack_focus": {
         "enabled": true,
-        "from_character": "CHAR_MINH",
-        "to_character": "CHAR_LAN",
+        "from_character": "CHAR_LAN",
+        "to_character": "CHAR_MINH",
         "start_sec": 0.15,
         "end_sec": 0.75
       },
       "transition": {
         "cut_type": "J_CUT",
         "audio_overlap_sec": 0.3,
-        "raw_render_path": "workspace/raw_renders/SHOT_002_raw.mp4"
+        "raw_render_path": "workspace/raw_renders/SHOT_003_raw.mp4"
       }
     }
   ]

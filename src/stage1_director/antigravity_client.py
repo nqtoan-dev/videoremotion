@@ -1,9 +1,10 @@
-import json
+import os
 import re
+import json
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, Optional, List
 from src.stage1_director.director_analyzer import (
     scan_available_3d_assets,
     build_director_prompt_for_antigravity,
@@ -14,13 +15,242 @@ from src.stage1_director.camera_180_solver import (
 )
 
 
+def _get_antigravity_2_candidate_paths() -> List[Path]:
+    """
+    Danh sách các đường dẫn cấu hình chuẩn nơi Antigravity 2.0 (Desktop IDE & CLI)
+    lưu trữ phiên đăng nhập (OAuth Token / Session / Account Info) trên máy người dùng.
+    """
+    home = Path.home()
+    appdata = Path(os.environ.get("APPDATA", str(home / "AppData" / "Roaming")))
+    localappdata = Path(os.environ.get("LOCALAPPDATA", str(home / "AppData" / "Local")))
+    xdg_config = Path(os.environ.get("XDG_CONFIG_HOME", str(home / ".config")))
+
+    return [
+        # Chuẩn thư mục .antigravity tại HOME
+        home / ".antigravity" / "auth.json",
+        home / ".antigravity" / "session.json",
+        home / ".antigravity" / "credentials.json",
+        home / ".antigravity" / "config.json",
+        home / ".antigravity-2.0" / "auth.json",
+        # Chuẩn Antigravity 2.0 trên Windows (%APPDATA% & %LOCALAPPDATA%)
+        appdata / "Antigravity" / "auth.json",
+        appdata / "Antigravity" / "session.json",
+        appdata / "Antigravity" / "User" / "globalStorage" / "storage.json",
+        appdata / "Antigravity 2.0" / "auth.json",
+        localappdata / "Antigravity" / "auth.json",
+        localappdata / "Antigravity" / "credentials.json",
+        # Chuẩn Antigravity 2.0 trên Linux (~/.config)
+        xdg_config / "Antigravity" / "auth.json",
+        xdg_config / "Antigravity" / "User" / "globalStorage" / "storage.json",
+        xdg_config / "antigravity" / "auth.json",
+        xdg_config / "antigravity-2.0" / "auth.json",
+        # Chuẩn Antigravity 2.0 trên macOS
+        home / "Library" / "Application Support" / "Antigravity" / "auth.json",
+        home / "Library" / "Application Support" / "Antigravity" / "User" / "globalStorage" / "storage.json",
+    ]
+
+
+def _extract_token_and_account_from_json(data: Any) -> Optional[Dict[str, str]]:
+    """
+    Đệ quy trích xuất token xác thực (access_token, session_token, api_key, id_token)
+    và định danh người dùng (email, account, user, username) từ cấu trúc JSON của Antigravity 2.0.
+    """
+    if not isinstance(data, dict):
+        return None
+
+    token_keys = (
+        "access_token",
+        "accessToken",
+        "session_token",
+        "sessionToken",
+        "auth_token",
+        "authToken",
+        "id_token",
+        "api_key",
+        "apiKey",
+        "token",
+    )
+    user_keys = ("email", "username", "user_email", "account_name", "account", "name", "user")
+
+    found_token = None
+    found_user = None
+
+    for tk in token_keys:
+        val = data.get(tk)
+        if isinstance(val, str) and len(val.strip()) >= 8:
+            found_token = val.strip()
+            break
+
+    for uk in user_keys:
+        val = data.get(uk)
+        if isinstance(val, str) and len(val.strip()) >= 2:
+            found_user = val.strip()
+            break
+        elif isinstance(val, dict):
+            nested_email = val.get("email") or val.get("name") or val.get("username")
+            if isinstance(nested_email, str) and nested_email.strip():
+                found_user = nested_email.strip()
+                break
+
+    # Tìm trong các khóa lồng nhau của Antigravity 2.0 (ví dụ: "antigravity.auth", "sessions", "account")
+    if not found_token:
+        for k, v in data.items():
+            if isinstance(v, dict):
+                sub = _extract_token_and_account_from_json(v)
+                if sub and sub.get("token"):
+                    found_token = sub["token"]
+                    found_user = found_user or sub.get("account")
+                    break
+            elif isinstance(v, list):
+                for item in v:
+                    if isinstance(item, dict):
+                        sub = _extract_token_and_account_from_json(item)
+                        if sub and sub.get("token"):
+                            found_token = sub["token"]
+                            found_user = found_user or sub.get("account")
+                            break
+
+    if found_token:
+        return {
+            "token": found_token,
+            "account": found_user or "Antigravity 2.0 Local User",
+        }
+    return None
+
+
+def resolve_antigravity_cli_binary() -> Optional[str]:
+    """Dò tìm binary của Antigravity CLI (hỗ trợ cả `antigravity-cli` và `antigravity` bản 2.0)."""
+    for bin_name in ("antigravity-cli", "antigravity", "ag"):
+        found = shutil.which(bin_name)
+        if found:
+            return found
+
+    # Quét thêm các thư mục cài đặt cục bộ phổ biến của Antigravity 2.0 trên máy người dùng
+    home = Path.home()
+    localappdata = Path(os.environ.get("LOCALAPPDATA", str(home / "AppData" / "Local")))
+    extra_bins = [
+        localappdata / "Programs" / "Antigravity" / "bin" / "antigravity-cli.exe",
+        localappdata / "Programs" / "Antigravity" / "bin" / "antigravity.exe",
+        home / ".antigravity" / "bin" / "antigravity-cli",
+        home / ".local" / "bin" / "antigravity-cli",
+    ]
+    for p in extra_bins:
+        if p.exists():
+            return str(p)
+    return None
+
+
+def discover_and_bind_antigravity_2_auth() -> Dict[str, Any]:
+    """
+    Tự động kiểm tra và kế thừa phiên đăng nhập của người dùng từ Antigravity 2.0 trên máy:
+    1. Kiểm tra biến môi trường hoặc file cấu hình Antigravity 2.0 đã đăng nhập.
+    2. Nếu tìm thấy phiên của Antigravity 2.0 mà CLI chưa có `~/.antigravity/auth.json`,
+       tự động đồng bộ sang `~/.antigravity/auth.json` để `antigravity-cli` tự động đăng nhập.
+    3. Kiểm tra thêm lệnh `auth status` của CLI nếu có.
+    """
+    # 1. Kiểm tra biến môi trường sẵn có trên máy
+    for env_key in ("ANTIGRAVITY_TOKEN", "ANTIGRAVITY_ACCESS_TOKEN", "ANTIGRAVITY_API_KEY"):
+        env_val = os.environ.get(env_key, "").strip()
+        if env_val:
+            return {
+                "authenticated": True,
+                "method": f"Environment ({env_key})",
+                "account": os.environ.get("ANTIGRAVITY_USER", "Local Logged-in User"),
+                "token": env_val,
+                "source_path": "os.environ",
+            }
+
+    # 2. Quét các file lưu phiên đăng nhập của Antigravity 2.0 trên máy người dùng
+    for candidate_path in _get_antigravity_2_candidate_paths():
+        if not candidate_path.exists():
+            continue
+        try:
+            raw_content = candidate_path.read_text(encoding="utf-8", errors="ignore")
+            json_data = json.loads(raw_content)
+            extracted = _extract_token_and_account_from_json(json_data)
+            if extracted and extracted.get("token"):
+                # Tự động đồng bộ sang ~/.antigravity/auth.json cho antigravity-cli nếu chưa tồn tại
+                cli_auth_file = Path.home() / ".antigravity" / "auth.json"
+                if candidate_path.resolve() != cli_auth_file.resolve() and not cli_auth_file.exists():
+                    try:
+                        cli_auth_file.parent.mkdir(parents=True, exist_ok=True)
+                        cli_auth_file.write_text(
+                            json.dumps(
+                                {
+                                    "access_token": extracted["token"],
+                                    "account": extracted["account"],
+                                    "synced_from": str(candidate_path),
+                                    "version": "2.0",
+                                },
+                                ensure_ascii=False,
+                                indent=2,
+                            ),
+                            encoding="utf-8",
+                        )
+                    except Exception:
+                        pass
+
+                return {
+                    "authenticated": True,
+                    "method": "Antigravity 2.0 Local Session (Auto-SSO)",
+                    "account": extracted["account"],
+                    "token": extracted["token"],
+                    "source_path": str(candidate_path),
+                }
+        except Exception:
+            continue
+
+    # 3. Kiểm tra trực tiếp qua CLI `auth status` (nếu Antigravity 2.0 lưu trong OS Keychain / Credential Manager)
+    cli_bin = resolve_antigravity_cli_binary()
+    if cli_bin:
+        try:
+            proc = subprocess.run(
+                [cli_bin, "auth", "status"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=5,
+            )
+            out = (proc.stdout + "\n" + proc.stderr).strip()
+            if proc.returncode == 0 and out and "not logged in" not in out.lower():
+                return {
+                    "authenticated": True,
+                    "method": "Antigravity 2.0 OS Keychain",
+                    "account": out.splitlines()[0][:60],
+                    "token": "KEYCHAIN_MANAGED",
+                    "source_path": cli_bin,
+                }
+        except Exception:
+            pass
+
+    return {
+        "authenticated": False,
+        "method": "Built-in Director Core (Offline Ready)",
+        "account": "Chưa phát hiện phiên Antigravity 2.0",
+        "token": None,
+        "source_path": None,
+    }
+
+
+def _build_authenticated_subprocess_env(auth_info: Dict[str, Any]) -> Dict[str, str]:
+    """Tạo môi trường thực thi kế thừa đầy đủ phiên đăng nhập Antigravity 2.0 cho tiến trình con."""
+    env = os.environ.copy()
+    token = auth_info.get("token")
+    if token and token != "KEYCHAIN_MANAGED":
+        env["ANTIGRAVITY_TOKEN"] = token
+        env["ANTIGRAVITY_ACCESS_TOKEN"] = token
+        env["ANTIGRAVITY_API_KEY"] = token
+    if auth_info.get("source_path") and auth_info["source_path"] != "os.environ":
+        env["ANTIGRAVITY_AUTH_FILE"] = str(auth_info["source_path"])
+    return env
+
+
 def _builtin_director_fallback(user_request: str, inventory: Dict[str, Any]) -> Dict[str, Any]:
     """
     Ông Đạo Diễn nội tại: Khi antigravity-cli chưa được cài trong PATH hoặc gặp lỗi kết nối,
     tự động phân tích yêu cầu của người dùng để sinh kịch bản phân cảnh điện ảnh chi tiết.
     """
     clean_req = user_request.strip() or "Cuộc đối thoại căng thẳng trong phòng máy chủ"
-    # Tách ý hoặc tạo 3 phân cảnh chuẩn cấu trúc 3 hồi (Thiết lập -> Cao trào -> Kết luận)
     sentences = [s.strip() for s in re.split(r"[.!?\n]+", clean_req) if len(s.strip()) > 5]
 
     if len(sentences) >= 3:
@@ -168,18 +398,30 @@ def generate_storyboard_via_antigravity(
     output_storyboard_path: Path,
 ) -> Dict[str, Any]:
     """
-    Gọi `antigravity-cli` làm nhân AI sinh dữ liệu phim (kèm cơ chế fallback thông minh nếu CLI lỗi),
-    sau đó chạy Bộ giải Toán học 180 độ để khóa chính xác góc nhìn nhân vật và tọa độ Camera 3D.
+    Tự động nạp phiên đăng nhập từ Antigravity 2.0 trên máy người dùng,
+    gọi `antigravity-cli` sinh dữ liệu phim và khóa góc máy theo Quy tắc 180 độ.
     """
     inventory = scan_available_3d_assets(assets_root)
     director_prompt = build_director_prompt_for_antigravity(user_request, inventory)
 
-    cli_executable = shutil.which("antigravity-cli") or "antigravity-cli"
+    # Tự động phát hiện và kế thừa tài khoản Antigravity 2.0 đã đăng nhập trên máy
+    auth_info = discover_and_bind_antigravity_2_auth()
+    auth_env = _build_authenticated_subprocess_env(auth_info)
+
+    cli_executable = resolve_antigravity_cli_binary() or "antigravity-cli"
     cmd = [cli_executable, "chat", "--format", "json", "--prompt", director_prompt]
 
     storyboard = None
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding="utf-8", timeout=60)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding="utf-8",
+            timeout=60,
+            env=auth_env,
+        )
         raw_text = proc.stdout.strip()
         first_brace = raw_text.find("{")
         last_brace = raw_text.rfind("}")
@@ -191,6 +433,13 @@ def generate_storyboard_via_antigravity(
 
     if not storyboard or "shots" not in storyboard:
         storyboard = _builtin_director_fallback(user_request, inventory)
+
+    # Lưu thông tin xác thực Antigravity 2.0 vào project_meta để hiển thị trên UI
+    storyboard.setdefault("project_meta", {})["antigravity_auth"] = {
+        "authenticated": auth_info["authenticated"],
+        "method": auth_info["method"],
+        "account": auth_info["account"],
+    }
 
     characters = storyboard.get("characters", {})
     prev_speaker = None

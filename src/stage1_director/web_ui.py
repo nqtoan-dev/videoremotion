@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from src.main_orchestrator import execute_cinematic_pipeline
+from src.stage1_director.antigravity_client import discover_and_bind_antigravity_2_auth
 
 app = FastAPI(
     title="CINE-CODE 7530 Director Studio",
@@ -84,6 +85,18 @@ def start_render_job(req: RenderJobRequest):
     return {"status": "started", "prompt": req.prompt.strip()}
 
 
+@app.get("/api/auth/status")
+def get_antigravity_auth_status():
+    """Kiểm tra trạng thái tự động đăng nhập Antigravity 2.0 từ tài khoản trên máy người dùng."""
+    info = discover_and_bind_antigravity_2_auth()
+    return {
+        "authenticated": info["authenticated"],
+        "method": info["method"],
+        "account": info["account"],
+        "source_path": info["source_path"],
+    }
+
+
 @app.get("/api/status")
 def get_pipeline_status():
     storyboard_data = None
@@ -106,10 +119,16 @@ def get_pipeline_status():
 
     with STATE_LOCK:
         video_file = WORKSPACE_DIR / "final_cinematic_movie.mp4"
+        auth_state = discover_and_bind_antigravity_2_auth()
         return {
             **PIPELINE_STATE,
             "video_ready": video_file.exists() and video_file.stat().st_size > 1000,
             "storyboard": storyboard_data,
+            "antigravity_auth": {
+                "authenticated": auth_state["authenticated"],
+                "method": auth_state["method"],
+                "account": auth_state["account"],
+            },
         }
 
 
@@ -496,8 +515,9 @@ STUDIO_HTML = """<!DOCTYPE html>
       <h1>STUDIO ĐẠO DIỄN ĐIỆN ẢNH 3D TỰ ĐỘNG</h1>
     </div>
     <div class="hw-pills">
-      <span class="hw-pill">CPU: Intel Xeon 6C/12T (TTS + Rhubarb: 0MB VRAM)</span>
-      <span class="hw-pill">GPU: Quadro P2000 4GB (EEVEE &lt; 3.2GB VRAM + h264_nvenc)</span>
+      <span id="authPill" class="hw-pill" style="border-color: rgba(168, 85, 247, 0.4); color: #c084fc; background: rgba(168, 85, 247, 0.1);">🔑 Kiểm tra Antigravity 2.0...</span>
+      <span class="hw-pill">CPU: Intel Xeon 6C/12T (0MB VRAM)</span>
+      <span class="hw-pill">GPU: Quadro P2000 4GB (&lt; 3.2GB VRAM)</span>
     </div>
   </header>
 
@@ -506,7 +526,7 @@ STUDIO_HTML = """<!DOCTYPE html>
     <section class="panel">
       <div class="panel-header">
         <span>1. Bàn Chỉ Đạo Đạo Diễn (Tầng 1)</span>
-        <span>antigravity-cli</span>
+        <span id="cliAuthBadge" style="font-size:11px; text-transform:none; color:var(--accent-gold);">Kiểm tra phiên...</span>
       </div>
       <div class="panel-body">
         <div>
@@ -712,6 +732,26 @@ STUDIO_HTML = """<!DOCTYPE html>
         document.getElementById('progressPct').textContent = (data.percent || 0) + '%';
         document.getElementById('progressFill').style.width = (data.percent || 0) + '%';
         document.getElementById('statusBadge').textContent = (data.status || 'idle').toUpperCase();
+
+        if (data.antigravity_auth) {
+          const authPill = document.getElementById('authPill');
+          const cliBadge = document.getElementById('cliAuthBadge');
+          if (data.antigravity_auth.authenticated) {
+            authPill.innerHTML = `🔑 Antigravity 2.0: <strong>${data.antigravity_auth.account}</strong>`;
+            authPill.style.color = '#4ade80';
+            authPill.style.borderColor = 'rgba(74, 222, 128, 0.4)';
+            authPill.style.background = 'rgba(74, 222, 128, 0.1)';
+            cliBadge.textContent = 'Đã kết nối: ' + data.antigravity_auth.account;
+            cliBadge.style.color = '#4ade80';
+          } else {
+            authPill.innerHTML = `⚡ Đạo Diễn Nội Tại (Offline Ready)`;
+            authPill.style.color = '#94a3b8';
+            authPill.style.borderColor = 'rgba(148, 163, 184, 0.3)';
+            authPill.style.background = 'rgba(148, 163, 184, 0.08)';
+            cliBadge.textContent = 'Đạo Diễn Nội Tại';
+            cliBadge.style.color = 'var(--accent-gold)';
+          }
+        }
 
         updateStageCards(data.current_stage || 0, data.status);
 

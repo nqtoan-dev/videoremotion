@@ -1,7 +1,10 @@
 import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-from src.stage1_director.antigravity_client import generate_storyboard_via_antigravity
+from src.stage1_director.antigravity_client import (
+    generate_storyboard_via_antigravity,
+    discover_and_bind_antigravity_2_auth,
+)
 
 MOCK_CLI_JSON = {
     "project_meta": {
@@ -77,3 +80,36 @@ def test_stage1_180_degree_rule_and_manifest(tmp_path: Path):
     assert 50.0 <= data["shots"][1]["camera"]["lens_mm"] <= 85.0
     # Cảnh 2 đổi người nói phải tự động kích hoạt Rack Focus
     assert data["shots"][1]["rack_focus"]["enabled"] is True
+
+
+def test_antigravity_2_auto_login_from_local_machine_session(tmp_path: Path, monkeypatch):
+    # Giả lập người dùng đã đăng nhập sẵn vào Antigravity 2.0 trên máy (lưu tại AppData/Antigravity/User/globalStorage/storage.json)
+    fake_appdata = tmp_path / "AppData" / "Roaming"
+    storage_file = fake_appdata / "Antigravity" / "User" / "globalStorage" / "storage.json"
+    storage_file.parent.mkdir(parents=True, exist_ok=True)
+    storage_file.write_text(
+        json.dumps({
+            "antigravity.auth": {
+                "accessToken": "ag2_live_session_token_99887766",
+                "account": {"email": "director@antigravity2.local"}
+            }
+        }),
+        encoding="utf-8"
+    )
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("APPDATA", str(fake_appdata))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.delenv("ANTIGRAVITY_TOKEN", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_API_KEY", raising=False)
+
+    auth_info = discover_and_bind_antigravity_2_auth()
+
+    assert auth_info["authenticated"] is True
+    assert auth_info["token"] == "ag2_live_session_token_99887766"
+    assert auth_info["account"] == "director@antigravity2.local"
+    # Kiểm tra file ~/.antigravity/auth.json đã được tự động đồng bộ cho antigravity-cli
+    synced_cli_auth = tmp_path / ".antigravity" / "auth.json"
+    assert synced_cli_auth.exists()
